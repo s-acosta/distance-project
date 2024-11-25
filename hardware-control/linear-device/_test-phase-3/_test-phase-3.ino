@@ -1,4 +1,4 @@
-// Goal of the phase 2:
+// Goal of the phase 3:
 // 1. Stage 1: Device receives order
 // 2. Stage 2: Stepper goes to the end of the range
 // 3. Stage 3: Stepper comes back
@@ -80,8 +80,9 @@ void setup() {
 
   servo.attach(servo_pin);
   micro_servo.attach(micro_servo_pin);
+
   servo.writeMicroseconds(rest_pos);
-  micro_servo.writeMicroseconds(1275);
+  micro_servo.writeMicroseconds(1360);
 
   last_ms = millis();
   current_position = 0;

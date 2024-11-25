@@ -1,4 +1,4 @@
-int trigger_pin = 12;
+int trigger_pin = 13;
 int led_pin = 2;
 unsigned long start_time;
 unsigned long camera_time;
@@ -19,14 +19,19 @@ void setup() {
   while (digitalRead(trigger_pin) == LOW){
   }
 
-  digitalWrite(led_pin, HIGH);
-
   start_time = millis();
 
 }
 
 // the loop function runs over and over again forever
 void loop() {
+
+  if (millis()>start_time + 1000 && millis()<start_time + 3000){
+      digitalWrite(led_pin, HIGH);
+  }
+  else{
+    digitalWrite(led_pin, LOW);
+  }
 
   if (millis()>camera_time + 100){
     camera_time = millis();

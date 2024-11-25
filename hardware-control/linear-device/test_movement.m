@@ -1,16 +1,57 @@
-%% Position test
-n_trials = 1;
-start_position = 0;
-end_position = 700;
-off_time = 0;
+% %% Position test
+% a = arduino('com6', 'Uno');
+% a.writeDigitalPin("D2", 0);
 
-stepper = setup_stepper('COM3');
+DAQ = daq('ni');
+DAQ.addoutput('Dev1', 'ao1', 'Voltage');
+DAQ.write(0);
+
+%%
+orders = [2, 1, 2, 1];
+stepper_port = 'com11';
+
+stepper = serialport(stepper_port, 115200);
+configureTerminator(stepper, "LF");
+while ~contains(stepper.readline(),  "Arduino is ready")
+end
 
 %% position to go
-tic;
-
 stepper.flush();
 stepper.UserData = struct("Steps",[],"Time", []);
+
+
+n_trials = length(orders);
+
+is_triggered = false;
+
+i_trial = 0;
+while i_trial < n_trials
+
+    if is_triggered == false
+        DAQ.write(5);
+    end
+
+    i_trial = i_trial + 1;
+    order = strcat("<", num2str(orders(i_trial)), ">");
+    stepper.writeline(order);
+
+    [stepper, stop] = readStepsCount(stepper);
+    while stop == 0
+         [stepper, stop] = readStepsCount(stepper);
+    end
+
+end
+
+% a.writeDigitalPin("D2", 0);
+DAQ.write(0);
+configureCallback(stepper, "off")
+data = struct;
+data.orders = orders;
+data.time = stepper.UserData.Time;
+data.steps = stepper.UserData.Steps;
+    
+%%
+
 order = strcat("<", num2str(100), ">");
 
 % is_moving = 0;

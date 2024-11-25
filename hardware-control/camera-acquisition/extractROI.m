@@ -11,7 +11,7 @@ closePreview(v)
 f = figure;
 ax = gca;
 title("Select your ROI and double click when finished:")
-image(ax, snap)
+image(snap)
 axis(ax, 'off', 'image', 'equal')
 colormap gray
 
@@ -22,8 +22,6 @@ snap = rgb2gray(snapshot(v));
 snap = imcrop(snap, ROI);
 
 imagesc(ax, snap)
-axis(ax, 'off', 'image', 'equal')
-colormap gray
 
 dlgTitle    = 'User Question';
 dlgQuestion = 'Do like your ROI?';

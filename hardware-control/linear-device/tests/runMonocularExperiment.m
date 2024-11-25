@@ -3,55 +3,6 @@
 
 % Step 1: Access and Configure a Device.
 
-total_frames = 0.5*60*10;
-frame_rate = 10;
-
-filelocation = "C:\Users\Goard Lab\Desktop";
-filename = "distance-2.mp4";
-fullFilename = fullfile(filelocation, filename);
-
-% Create and configure the video writer
-logfile = VideoWriter(fullFilename, "MPEG-4");
-logfile.FrameRate = 10;
-logfile.Quality = 75;
-
-%%
-
-% Access an image acquisition device.
-v = videoinput("winvideo", 2, "MJPG_1024x768");
-
-v.LoggingMode = "disk";
-v.DiskLogger = logfile;
-
-% Set recording parameters
-triggerconfig(v, 'manual');
-v.FramesPerTrigger = 1;
-v.TriggerFrameDelay = 0;
-v.TriggerRepeat = inf;
-
-% Preview what the camera is seeing
-preview(v);
-start(v);
-%% Select ROI
-snap = getsnapshot(v);
-
-% display it
-f = figure;
-ax = gca;
-title("Select your ROI and double click when finished:")
-imagesc(snap)
-axis image
-axis off
-colormap gray
-
-roi = drawrectangle(ax);
-v.ROIPosition = round(customWait(roi)); % get rounded position
-close(f);
-preview(v); % recall to update ROI
-fprintf("ROI updated.\n");
-
-start(v);
-
 %% Position test
 % This scripts is to test that the device moves to the desired position
 % when prompted with Matlab
@@ -74,7 +25,6 @@ configureCallback(stepper,"terminator", @readStepsCount)
 tic;
 stepper.flush();
 stepper.UserData = struct("Steps",[],"Time", []);
-camera_times = toc;
 i_trial = 0;
 is_going = 0;
 is_coming_back = 0;

@@ -1,24 +1,19 @@
 %% This script is to preview the images to fine tune the position of the cameras
 
-function previewCamera(v, options)
+function previewCamera(v,w)
 
-arguments (Input)
-    v
-    options.Flip (1,1) logical = false
-end
+fig = figure('Units','normalized', 'Position', [0.1,0.2,0.8,0.5]);
 
-fig = figure('Units','normalized', 'Position', [0.1,0.2,0.4,0.5]);
+ax1 = subplot(1,2,1);
+ax2 = subplot(1,2,2);
 
-ax1 = gca;
+im1 = image(ax1, flipud(snapshot(w)));
+im2 = image(ax2, flipud(snapshot(v)));
 
-if options.Flip
-    im1 = image(ax1, flipud(snapshot(v)));
-else
-     im1 = image(ax1, snapshot(v));
-end
+title(ax1, 'Right Eye', 'FontSize', 14);
+title(ax2, 'Left Eye', 'FontSize', 14);
 
-title(ax1, 'Mouse Camera', 'FontSize', 14);
-axis(ax1, 'off', 'image', 'equal')
+axis([ax1, ax2], 'off', 'image', 'equal')
 
 i_frame = 0;
 while true
@@ -26,17 +21,13 @@ while true
     i_frame = i_frame + 1;
 
     snap_1 = snapshot(v);
+    snap_2 = snapshot(w);
 
     if ishandle(fig)
+        set(im1, 'CData', flipud(snap_1))
+        set(im2, 'CData', flipud(snap_2))
 
-        if options.Flip
-            set(im1, 'CData', flipud(snap_1))
-        else
-            set(im1, 'CData', snap_1)
-        end
-        
-        sgtitle(fig, "Frame " + string(i_frame))
-
+        sgtitle(fig, "Frame " + string(i_frame) )
     else
         break
     end

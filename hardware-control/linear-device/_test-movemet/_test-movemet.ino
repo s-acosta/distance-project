@@ -1,6 +1,6 @@
 // 1. Stepper Motor variables
-int dir_pin = 13;
-int step_pin = 12;
+int dir_pin = 12;
+int step_pin = 11;
 int target_position;
 int steps;
 int current_steps;

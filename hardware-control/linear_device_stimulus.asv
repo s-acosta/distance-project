@@ -1,0 +1,86 @@
+function stim_data = linear_device_stimulus(stepper_port, options)
+
+% Variable set-up
+arguments
+    stepper_port
+    options.n_repeats = 1;
+    options.distances = [1, 2];
+    options.off_time = 1;
+    options.DAQ_flag = false;
+    options.arduino_flag = false;
+    options.arduino_port = false;
+    options.random_flag = true;
+    options.save_flag = false;
+end
+
+% Check if arduino flag
+if options.arduino_flag  
+    a = arduino(options.arduino_port, 'Uno');
+    a.writeDigitalPin("D2", 0);
+end
+
+% Set up stepper
+stepper = setup_stepper(stepper_port);
+
+% Set up stimulus orders
+n_distances = length(options.distances);
+if options.random_flag
+distance_vec = [];
+    for i = 1:options.n_repeats
+        distance_vec = [distance_vec options.distances(randperm(n_distances))];
+    end
+else
+    distance_vec = repmat(options.distances, [1 options.n_repeats]);
+end
+
+pause()
+
+is_triggered = false;
+% [stepper, ~] = readStepsCount(stepper);
+
+i_trial = 0;
+while i_trial < length(distance_vec)
+    
+    fprintf('\tPresentation %d | Distance %d\n', i_trial+1, distance_vec(i_trial+1));
+    
+    if i_trial > 0
+        fprintf('\t\t Start: %0.04fs\n', stepper.UserData.Time(end)/1000);
+    end
+
+    if is_triggered == false
+        if options.arduino_flag
+            a.writeDigitalPin("D2", 1);
+        end
+    end
+
+    i_trial = i_trial + 1;
+    
+    order = strcat("<", num2str(distance_vec(i_trial)), ">");
+    stepper.writeline(order);
+    tic;
+
+    [stepper, stop] = readStepsCount(stepper);
+    while stop == 0
+         [stepper, stop] = readStepsCount(stepper);
+    end
+    
+    fprintf('\t\t End: %0.04fs\n', stepper.UserData.Time(end)/1000);
+    
+    [stepper, ~] = readStepsCount(stepper);
+    while toc < 25
+         [stepper, ~] = readStepsCount(stepper);
+    end
+    
+end
+
+if options.arduino_flag
+    a.writeDigitalPin("D2", 0);
+end
+
+configureCallback(stepper, "off")
+stim_data = struct;
+stim_data.time = stepper.UserData.Time;
+stim_data.steps = stepper.UserData.Steps;
+stim_data.distance_vec = distance_vec;
+
+end

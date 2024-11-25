@@ -1,0 +1,68 @@
+function ROI = extract_ROI(v)
+
+arguments (Input)
+    v webcam
+end
+
+snap = snapshot(v);
+closePreview(v)
+
+f = figure;
+ax = gca;
+title("Select your ROI and double click when finished:")
+imagesc(snap)
+axis image
+axis off
+colormap gray
+
+roi = drawrectangle(ax);
+ROI = round(customWait(roi));
+
+snap = rgb2gray(snapshot(v));
+snap = imcrop(snap, ROI);
+
+imagesc(ax, snap)
+
+dlgTitle    = 'User Question';
+dlgQuestion = 'Do like your ROI?';
+choice = questdlg(dlgQuestion,dlgTitle,'Yes','No', 'Yes');
+pause(0.3)
+
+switch choice
+
+    case 'Yes'
+        disp('ROI Extracted...')
+        close(f)
+        return
+    case 'No'
+        close(f)
+        extract_ROI(v)
+end
+
+end
+
+function pos = customWait(hROI)
+
+% Listen for mouse clicks on the ROI
+l = addlistener(hROI,'ROIClicked',@clickCallback);
+
+% Block program execution
+uiwait;
+
+% Remove listener
+delete(l);
+
+% Return the current position
+pos = hROI.Position;
+
+end
+
+function clickCallback(~,evt)
+
+if strcmp(evt.SelectionType,'double')
+    uiresume;
+end
+
+end
+
+

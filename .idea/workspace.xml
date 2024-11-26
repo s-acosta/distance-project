@@ -5,10 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="10569d02-e031-45b9-a9f3-fad730edf2d4" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/Distance-Coding-Analysis.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Distance-Coding-Analysis.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/calibration-notebooks/calibration-w-DLC/dlc-calibration.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/calibration-notebooks/calibration-w-DLC/dlc-calibration.ipynb" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/linear-notebooks/analysis-linear.ipynb" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/LinearExperiment.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -54,7 +52,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "git-widget-placeholder": "main",
     "ignore.virus.scanning.warn.message": "true",
-    "last_opened_file_path": "C:/Users/acostamendoza/projects/distance-project",
+    "last_opened_file_path": "C:/Users/acostamendoza/projects/distance-project/src",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -66,12 +64,14 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\acostamendoza\projects\distance-project\src" />
+      <recent name="C:\Users\acostamendoza\projects\distance-project\linear-notebooks" />
       <recent name="C:\Users\acostamendoza\projects\Distance-Coding-Analysis-2\analysis-notebooks" />
       <recent name="C:\Users\acostamendoza\projects\Distance-Coding-Analysis\src" />
       <recent name="C:\Users\acostamendoza\projects\Distance-Coding-Analysis\calibration-notebooks\calibration-w-DLC" />
-      <recent name="C:\Users\acostamendoza\projects\Distance-Coding-Analysis\analysis-notebooks" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\acostamendoza\projects\distance-project" />
       <recent name="C:\Users\acostamendoza\projects\Distance-Coding-Analysis\calibration-notebooks\calibration-w-DLC\temp" />
     </key>
   </component>
@@ -160,7 +160,7 @@
       <workItem from="1731980490025" duration="25244000" />
       <workItem from="1732498634965" duration="2702000" />
       <workItem from="1732503289340" duration="7458000" />
-      <workItem from="1732570563065" duration="2030000" />
+      <workItem from="1732570563065" duration="2356000" />
     </task>
     <servers />
   </component>

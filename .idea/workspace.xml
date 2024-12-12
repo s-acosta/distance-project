@@ -5,8 +5,15 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="10569d02-e031-45b9-a9f3-fad730edf2d4" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/linear-notebooks/analysis-linear.ipynb" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/LinearExperiment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/Distance-Coding-Analysis.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Distance-Coding-Analysis.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/calibration-notebooks/calibration-w-DLC/dlc-calibration.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/calibration-notebooks/calibration-w-DLC/dlc-calibration.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/calibration-notebooks/distance-size-computations.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/calibration-notebooks/distance-size-computations.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/linear-notebooks/analysis-linear.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/linear-notebooks/analysis-linear.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/radial-notebooks/analysis-decoding.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/radial-notebooks/analysis-decoding.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/DistanceCalibration.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/DistanceCalibration.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/LinearExperiment.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/LinearExperiment.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -30,12 +37,12 @@
     &quot;assignee&quot;: &quot;s-acosta&quot;
   }
 }</component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/s-acosta/distance-project.git",
-    "accountId": "7c21cee7-63f0-41be-8a28-6970955e8219"
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/s-acosta/distance-project.git&quot;,
+    &quot;accountId&quot;: &quot;7c21cee7-63f0-41be-8a28-6970955e8219&quot;
   }
-}]]></component>
+}</component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 5
 }</component>
@@ -44,24 +51,24 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_ADD_EXTERNAL_FILES": "true",
-    "Python.analysis-script.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "git-widget-placeholder": "main",
-    "ignore.virus.scanning.warn.message": "true",
-    "last_opened_file_path": "C:/Users/acostamendoza/projects/distance-project/src",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "com.intellij.jupyter.core.jupyter.connections.configuration.JupyterServerConfigurable",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_ADD_EXTERNAL_FILES&quot;: &quot;true&quot;,
+    &quot;Python.analysis-script.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/acostamendoza/projects/distance-project/src&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.intellij.jupyter.core.jupyter.connections.configuration.JupyterServerConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\acostamendoza\projects\distance-project\src" />
@@ -161,6 +168,18 @@
       <workItem from="1732498634965" duration="2702000" />
       <workItem from="1732503289340" duration="7458000" />
       <workItem from="1732570563065" duration="2356000" />
+      <workItem from="1732679871125" duration="1628000" />
+      <workItem from="1732682015928" duration="3274000" />
+      <workItem from="1733152964687" duration="2187000" />
+      <workItem from="1733156584461" duration="911000" />
+      <workItem from="1733157509354" duration="15983000" />
+      <workItem from="1733257833353" duration="19434000" />
+      <workItem from="1733355233215" duration="23756000" />
+      <workItem from="1733513537442" duration="12573000" />
+      <workItem from="1733732069995" duration="5829000" />
+      <workItem from="1733789888796" duration="2936000" />
+      <workItem from="1733861565449" duration="7156000" />
+      <workItem from="1734031470887" duration="1361000" />
     </task>
     <servers />
   </component>

@@ -5,6 +5,7 @@ void readMatlab() {
     if (new_data == true) {
 
       target_position = atoi(received_chars_1);
+      target_position = int(target_position / 3);
 
       // id_string = readString.substring(0, 1);   //get the first four characters
       // pos_string = readString.substring(1, 5);  //get the next four characters

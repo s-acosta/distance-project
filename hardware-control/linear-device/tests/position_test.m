@@ -2,7 +2,7 @@
 % This scripts is to test that the device moves to the desired position
 % when prompted with Matlab
 
-stepper_port = 'COM3';
+stepper_port = 'COM10';
 stepper = serialport(stepper_port, 115200);
 configureTerminator(stepper, "LF");
 while ~contains(stepper.readline(),  "Arduino is ready")
@@ -15,7 +15,8 @@ configureCallback(stepper,"terminator", @readStepsCount)
 tic;
 
 %% position to go
-goal_position = 800;
+tic;
+goal_position = 0;
 
 order = strcat("<", num2str(goal_position), ">");
 stepper.writeline(order);
@@ -26,7 +27,7 @@ while ~stop
 end
 
 % Return
-goal_position = 0;
+goal_position = 1110;
 order = strcat("<", num2str(goal_position), ">");
 stepper.writeline(order);
 stop = 0;

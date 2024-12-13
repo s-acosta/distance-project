@@ -19,6 +19,12 @@ if options.arduino_flag
     a.writeDigitalPin("D2", 0);
 end
 
+if options.DAQ_flag
+    DAQ = daq('ni');
+    DAQ.addoutput('Dev1', 'ao0', 'Voltage');
+    DAQ.write(0);
+end
+
 % Set up stepper
 stepper = setup_stepper(stepper_port);
 
@@ -62,6 +68,9 @@ while i_trial < length(distance_vec)
         if options.arduino_flag
             a.writeDigitalPin("D2", 1);
         end
+        if options.DAQ_flag
+            DAQ.write(5);
+        end
     end
 
     i_trial = i_trial + 1;
@@ -87,11 +96,18 @@ end
 if options.arduino_flag
     a.writeDigitalPin("D2", 0);
 end
+if options.DAQ_flag
+    DAQ.write(0);
+end
 
 configureCallback(stepper, "off")
 stim_data = struct;
 stim_data.time = stepper.UserData.Time;
 stim_data.steps = stepper.UserData.Steps;
 stim_data.distance_vec = distance_vec;
+
+if options.save_flag
+    uisave('stim_data', sprintf('%s_stimulus_data_distance.mat', date));
+end
 
 end

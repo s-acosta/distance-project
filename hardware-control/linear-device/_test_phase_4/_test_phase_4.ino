@@ -62,7 +62,7 @@ int microservo_pin[servo_num] = {3,5};
 int servo_active_pos[servo_num] = {500, 2500};
 int servo_rest_pos[servo_num] = {1300, 1300};
 int microservo_active_pos[servo_num] = {600, 620};
-int target_position[servo_num] = {80, 1};
+int target_position[servo_num] = {100, 20};
 
 int startAngle;
 int stopAngle;
@@ -181,7 +181,7 @@ void loop() {
       micro_servo[target_servo].writeMicroseconds(angle);
     }
     else if (time_into_cycle < 5950) {
-      angle = map(time_into_cycle, 2950, 5950, 2500, 500);
+      angle = map(time_into_cycle, 2950, 5950, 2500, microservo_active_pos[i]);
       micro_servo[target_servo].writeMicroseconds(angle);
     }
     

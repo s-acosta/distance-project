@@ -307,7 +307,6 @@ def rotate_ellipse(x_ellipse, y_ellipse, angle, x_center=0, y_center=0):
 
     return np.array(x_rot), np.array(y_rot)
 
-
 def get_points_enclosed_by_ellipse(img, pts_region=None, threshold=50, show=False, quadrant=1):
     img_to_show = img.copy()
 

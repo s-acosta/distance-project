@@ -50,7 +50,6 @@ fprintf('Make sure it looks good before starting... \n')
 fprintf('Press enter when ready \n')
 pause()
 
-
 %%
 is_triggered = false;
 % [stepper, ~] = readStepsCount(stepper);

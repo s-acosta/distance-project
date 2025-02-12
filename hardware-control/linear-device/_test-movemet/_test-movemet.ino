@@ -1,13 +1,14 @@
 // 1. Stepper Motor variables
-int dir_pin = 12;
+int dir_pin = 10;
 int step_pin = 11;
+
 int target_position;
 int steps;
 int current_steps;
 int current_position=0;
 
 #define SPEED_TIME 1000 // this is in microsends, between steps
-#define SLOW_MOTOR_PERIOD 1 // this is miliseconds
+#define SLOW_MOTOR_PERIOD 2 // this is miliseconds
 #define FAST_MOTOR_PERIOD 5
 
 String read_string, distance_string, id_string;

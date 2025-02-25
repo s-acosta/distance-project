@@ -32,6 +32,7 @@ private:
     static const long STEPPER_FINAL_POS = 500;
     static const unsigned long FINAL_WAIT_TIME = 200;
     static const unsigned long MINI_SERVO_HOLD_TIME = 100;
+    static const long START_POSITION = 200; // Added new constant for start position
 
     ServoMotor& servos;
     MiniServoMotor& miniServos;

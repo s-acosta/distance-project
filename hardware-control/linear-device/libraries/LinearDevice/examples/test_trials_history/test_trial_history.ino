@@ -44,6 +44,8 @@ void setup()
 
     Serial.println("Motor Sequence Control Ready");
     Serial.println("Enter servo ID (0-3) to start sequence");
+
+    stepper.moveTo(200);
 }
 
 void loop()

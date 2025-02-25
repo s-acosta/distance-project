@@ -54,7 +54,6 @@ void TrialNoHistory::update() {
         }
         break;
 
-    // In the state machine, replace the MINI_SERVO_ACTIVATE case with:
     case NoHistoryState::MINI_SERVO_ACTIVATE:
         if (!miniServos.is_moving())
         {
@@ -64,7 +63,16 @@ void TrialNoHistory::update() {
         break;
 
     case NoHistoryState::MINI_SERVO_HOLD:
-        if (millis() - waitStartTime >= MINI_SERVO_HOLD_TIME)  // Using MiniServoMotor's HOLD_TIME
+        if (millis() - waitStartTime >= MINI_SERVO_HOLD_TIME)
+        {
+            // Add additional wait time (200ms) after mini servo activation
+            waitStartTime = millis();
+            currentState = NoHistoryState::POST_ACTIVATION_WAIT;
+        }
+        break;
+        
+    case NoHistoryState::POST_ACTIVATION_WAIT:
+        if (millis() - waitStartTime >= 200) // 200ms wait
         {
             servos.move_servo(currentId, servos.servos[currentId].rest_pos);
             currentState = NoHistoryState::SERVO_TO_REST;
@@ -73,7 +81,8 @@ void TrialNoHistory::update() {
 
     case NoHistoryState::SERVO_TO_REST:
         if (!servos.is_moving()) {
-            stepper.moveTo(0);
+            // Change from original: Use position 200 instead of 0
+            stepper.moveTo(200); // Home position is now 200
             currentState = NoHistoryState::STEPPER_HOME;
         }
         break;

@@ -24,6 +24,7 @@ bool useHistory = false;
 int currentId = -1;
 
 void setup() {
+
     Serial.begin(115200);
     initializePWM();
     servos.begin();
@@ -33,14 +34,6 @@ void setup() {
     
     pinMode(TRIGGER_PIN, INPUT);
 
-    // // Move stepper to the initial position (200)
-    // stepper.moveTo(200);
-    
-    // Wait for stepper to reach initial position
-    while(stepper.isMoving()) {
-        stepper.update();
-    }
-    
     // Check initial trigger pin state
     if (digitalRead(TRIGGER_PIN) == HIGH) {
         Serial.println("Trigger pin is already HIGH - trigger mode disabled");
@@ -51,7 +44,8 @@ void setup() {
         Serial.println("Trigger pin is LOW - trigger mode enabled");
         triggerEnabled = true;
     }
-    
+
+
     startTime = millis();  // Initial start time
 
     // Print that Arduino is ready
@@ -64,6 +58,7 @@ void sendReport() {
         if (!isTriggered) {
             // Just print b - MATLAB will ignore this since it doesn't start with <>
             Serial.println("b");
+
         } else {
             // Format: <mXXXiYaZtWWWW>
             // m: stepper position

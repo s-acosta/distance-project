@@ -15,6 +15,7 @@ enum class HistoryState {
     POSITION_WAIT,
     MINI_SERVO_ACTIVATE,
     MINI_SERVO_HOLD,
+    POST_ACTIVATION_WAIT, // New state for 200ms wait
     SERVO_TO_REST,
     STEPPER_HOME,
     COMPLETE
@@ -29,7 +30,7 @@ public:
     bool isComplete() const;
 
 private:
-    static const long STEPPER_FINAL_POS = 500;
+    static const long STEPPER_FINAL_POS = 900;
     static const unsigned long FINAL_WAIT_TIME = 200;
     static const unsigned long MINI_SERVO_HOLD_TIME = 100;
 

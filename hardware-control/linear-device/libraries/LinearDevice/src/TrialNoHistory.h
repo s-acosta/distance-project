@@ -10,9 +10,10 @@ enum class NoHistoryState {
     WAITING_FOR_INPUT,
     STEPPER_TO_POSITION,
     SERVO_TO_ACTIVE,
+    SERVO_WAIT,
     MINI_SERVO_ACTIVATE,
     MINI_SERVO_HOLD,   
-    SERVO_WAIT,
+    POST_ACTIVATION_WAIT, // New state for 200ms wait
     SERVO_TO_REST,
     STEPPER_HOME,
     COMPLETE

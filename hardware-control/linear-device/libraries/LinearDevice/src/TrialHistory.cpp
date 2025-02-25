@@ -87,7 +87,16 @@ void TrialHistory::update()
         break;
 
     case HistoryState::MINI_SERVO_HOLD:
-        if (millis() - waitStartTime >= MINI_SERVO_HOLD_TIME) // Using MiniServoMotor's HOLD_TIME
+        if (millis() - waitStartTime >= MINI_SERVO_HOLD_TIME)
+        {
+            // Add additional wait time (200ms) after mini servo activation
+            waitStartTime = millis();
+            currentState = HistoryState::POST_ACTIVATION_WAIT;
+        }
+        break;
+        
+    case HistoryState::POST_ACTIVATION_WAIT:
+        if (millis() - waitStartTime >= 200) // 200ms wait
         {
             servos.move_servo(currentId, servos.servos[currentId].rest_pos);
             currentState = HistoryState::SERVO_TO_REST;
@@ -97,7 +106,8 @@ void TrialHistory::update()
     case HistoryState::SERVO_TO_REST:
         if (!servos.is_moving())
         {
-            stepper.moveTo(0);
+            // Change from original: Use position 150 instead of 0
+            stepper.moveTo(150); // Home position is now 150
             currentState = HistoryState::STEPPER_HOME;
         }
         break;

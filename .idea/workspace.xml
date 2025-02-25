@@ -6,13 +6,78 @@
   <component name="ChangeListManager">
     <list default="true" id="10569d02-e031-45b9-a9f3-fad730edf2d4" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/calibration-notebooks/calibration-w-DLC/dlc-calibration.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/calibration-notebooks/calibration-w-DLC/dlc-calibration.ipynb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/calibration-notebooks/distance-size-computations.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/calibration-notebooks/distance-size-computations.ipynb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/_test-movemet.ino" beforeDir="false" afterPath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/_test-movemet.ino" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/readMatlab.ino" beforeDir="false" afterPath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/readMatlab.ino" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/tests/position_test.asv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/hardware-control/linear_device_stimulus.m" beforeDir="false" afterPath="$PROJECT_DIR$/hardware-control/linear_device_stimulus.m" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/radial-notebooks/analysis-decoding.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/radial-notebooks/analysis-decoding.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-motor/_test-motor.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-motor/motor.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-motor/motor.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-motor/serial.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-motor/serial.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/_test-movemet.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-movemet/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/_test-phase-2.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/moveToPosition.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-2/setDirection.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/_test-phase-3.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/moveToPosition.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-3/setDirection.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/_test-phase-5.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/moveToPosition.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test-phase-5/setDirection.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/_test_calibration.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/moveToPosition.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_calibration/setDirection.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_double-servo/_test_double-servo.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/_test_phase_4.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/moveToPosition.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/_test_phase_4/setDirection.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/clearCache.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/monocular-device.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/moveSteps.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/readMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/receiveFromMatlab.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/reportCounter.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/monocular-device/reportTime.ino" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/readStepsCount.m" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/setup_stepper.m" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/test_movement.m" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/tests/position_test.m" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/tests/runMonocularExperiment.asv" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/hardware-control/linear-device/tests/runMonocularExperiment.m" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -114,8 +179,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-deb605915726-JavaScript-PY-243.22562.220" />
-        <option value="bundled-python-sdk-0fc6c617c4bd-9a18a617cbe4-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-243.22562.220" />
+        <option value="bundled-js-predefined-d6986cc7102b-76f8388c3a79-JavaScript-PY-243.24978.54" />
+        <option value="bundled-python-sdk-91e3b7efe1d4-466328ff949b-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-243.24978.54" />
       </set>
     </attachedChunks>
   </component>
@@ -188,6 +253,9 @@
       <workItem from="1737146209954" duration="2877000" />
       <workItem from="1738277811139" duration="8725000" />
       <workItem from="1739379571351" duration="67000" />
+      <workItem from="1739559686854" duration="9000" />
+      <workItem from="1740016130831" duration="9720000" />
+      <workItem from="1740420934373" duration="192000" />
     </task>
     <servers />
   </component>

@@ -1,0 +1,23 @@
+# Syntax Coloring Map for LinearDevice
+
+# Classes (KEYWORD1)
+ServoMotor	KEYWORD1
+MiniServoMotor	KEYWORD1
+StepperMotor	KEYWORD1
+TrialHistory	KEYWORD1
+TrialNoHistory	KEYWORD1
+
+# Methods (KEYWORD2)
+begin	KEYWORD2
+update	KEYWORD2
+move_servo	KEYWORD2
+move_to_position	KEYWORD2
+activate_servo	KEYWORD2
+moveTo	KEYWORD2
+is_moving	KEYWORD2
+isMoving	KEYWORD2
+getCurrentPosition	KEYWORD2
+
+# Constants (LITERAL1)
+MOVEMENT_TIME	LITERAL1
+HOLD_TIME	LITERAL1

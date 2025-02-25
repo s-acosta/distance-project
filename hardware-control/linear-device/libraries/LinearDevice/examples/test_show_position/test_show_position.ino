@@ -1,164 +1,150 @@
+// servo_position_test.ino
+// Simple test file for motor positioning
+// Inputs a servo number (0-3) and:
+//   1. Moves stepper to the position from TrialConfig.h
+//   2. Activates the corresponding servo
+//   3. Stays in position until new command
+// Commands:
+//   0-3   - Select and activate servo at its position
+//   h     - Return to home position (deactivates all servos)
+
 #include "ServoMotor.h"
 #include "MiniServoMotor.h"
 #include "StepperMotor.h"
+#include "TrialConfig.h"
 #include "SharedPWM.h"
 #include <Wire.h>
 
 // Motor instances
 ServoMotor servos;
-MiniServoMotor miniServos;
-StepperMotor stepper(11, 10);  // Using pins from test_motor.ino
+MiniServoMotor miniServos; // Not used but required for includes
+StepperMotor stepper(11, 10);  // Using pins as in test_motor.ino (STEP_PIN, DIR_PIN)
 
-// Constants
-const unsigned long REPORT_INTERVAL = 50;  // 50ms between reports
-const long STEPPER_POSITIONS[] = {100, 200, 300, 400};  // From TrialConfig.h
-const unsigned long SERVO_WAIT_TIME = 1000;  // 1 second wait
-
-// Global variables
-unsigned long startTime = 0;
-unsigned long lastReportTime = 0;
-int currentId = -1;
-int previousId = -1;
-
-// State machine for servo control
-enum ControlState {
-  IDLE,
-  MOVING_STEPPER,
-  ACTIVATING_SERVO,
-  ACTIVATING_MINI_SERVO,
-  WAITING_MINI_SERVO
-};
-
-ControlState currentState = IDLE;
-unsigned long stateStartTime = 0;
+// State tracking
+int activeServo = -1;
+bool goingHome = false;
+String inputString = "";
+bool stringComplete = false;
 
 void setup() {
   Serial.begin(115200);
+  
+  // Initialize I2C and PWM controller
+  Wire.begin();
   initializePWM();
+  
+  // Initialize motors
   servos.begin();
-  miniServos.begin();
+  stepper.moveTo(0); // Start at home position
   
-  startTime = millis();
+  // Print welcome message
+  Serial.println("=== Servo Position Test ===");
+  Serial.println("Enter a servo ID (0-3) to move to position and activate");
+  Serial.println("Enter 'h' to return to home position");
+  Serial.println();
   
-  Serial.println("Servo Control Demo");
-  Serial.println("Enter servo ID (0-3) to select and activate a servo");
-  Serial.println("Example: '0' selects and activates servo 0");
-}
-
-void sendReport() {
-  unsigned long currentTime = millis();
-  
-  if (currentTime - lastReportTime >= REPORT_INTERVAL) {
-    // Format: <mXXXiYaZtWWWW>
-    // m: stepper position
-    // i: current servo ID (or -1 if none)
-    // a: mini servo active (1) or idle (0)
-    // t: time since start in ms
-    Serial.print("<m");
-    Serial.print(stepper.getCurrentPosition());
-    Serial.print("i");
-    Serial.print(currentId);
-    Serial.print("a");
-    Serial.print(miniServos.is_moving() ? "1" : "0");
-    Serial.print("t");
-    Serial.print(currentTime - startTime);
-    Serial.println(">");
-    
-    lastReportTime = currentTime;
+  // Print configured positions
+  Serial.println("Configured positions in TrialConfig.h:");
+  for (int i = 0; i < 4; i++) {
+    Serial.print("  Servo ");
+    Serial.print(i);
+    Serial.print(": stepper pos = ");
+    Serial.print(STEPPER_POSITIONS[i]);
+    Serial.print(", servo rest = ");
+    Serial.print(servos.servos[i].rest_pos);
+    Serial.print(", active = ");
+    Serial.println(servos.servos[i].active_pos);
   }
-}
-
-void processInput(String input) {
-  if (input.length() > 0) {
-    int id = input.toInt();
-    if (id >= 0 && id < 4) {
-      if (currentState == IDLE) {
-        currentId = id;
-        
-        // When a new servo is selected, reset any previous servo to rest position
-        if (previousId != -1 && previousId != currentId) {
-          servos.move_servo(previousId, servos.servos[previousId].rest_pos);
-          // Wait for servo to move to rest
-          while (servos.is_moving()) {
-            servos.update();
-          }
-        }
-        
-        // Start the sequence by moving the stepper to position
-        stepper.moveTo(STEPPER_POSITIONS[id]);
-        currentState = MOVING_STEPPER;
-        stateStartTime = millis();
-        Serial.print("Selected servo ID: ");
-        Serial.println(id);
-        Serial.print("Moving stepper to position: ");
-        Serial.println(STEPPER_POSITIONS[id]);
-      } else {
-        Serial.println("Already processing a servo. Please wait.");
-      }
-    } else {
-      Serial.println("Invalid servo ID. Please enter a number between 0-3.");
-    }
-  }
+  
+  Serial.println("\nReady for commands");
 }
 
 void loop() {
-  // Update all motors
+  // Update motors
   servos.update();
-  miniServos.update();
   stepper.update();
   
-  // State machine to handle servo control sequence
-  switch (currentState) {
-    case IDLE:
-      // Do nothing, waiting for input
-      break;
-      
-    case MOVING_STEPPER:
-      if (!stepper.isMoving()) {
-        // Stepper has reached position, now activate the servo
-        servos.move_servo(currentId, servos.servos[currentId].active_pos);
-        currentState = ACTIVATING_SERVO;
-        Serial.print("Activating servo ");
-        Serial.println(currentId);
-      }
-      break;
-      
-    case ACTIVATING_SERVO:
-      if (!servos.is_moving()) {
-        // Servo has reached active position, now activate mini servo
-        miniServos.activate_servo(currentId);
-        currentState = ACTIVATING_MINI_SERVO;
-        Serial.print("Activating mini-servo ");
-        Serial.println(currentId);
-      }
-      break;
-      
-    case ACTIVATING_MINI_SERVO:
-      if (!miniServos.is_moving()) {
-        // Mini servo has completed its activation sequence
-        stateStartTime = millis();
-        currentState = WAITING_MINI_SERVO;
-        Serial.println("Mini-servo activation complete. Waiting...");
-      }
-      break;
-      
-    case WAITING_MINI_SERVO:
-      if (millis() - stateStartTime >= SERVO_WAIT_TIME) {
-        // Wait complete, return to idle state
-        previousId = currentId;  // Remember this ID for next time
-        currentState = IDLE;
-        Serial.println("Sequence complete. Ready for next servo ID.");
-      }
-      break;
+  // Read serial input
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+    if (inChar == '\n') {
+      stringComplete = true;
+    } else {
+      inputString += inChar;
+    }
   }
   
-  // Send periodic status report
-  sendReport();
-  
-  // Check for user input
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-    processInput(input);
+  // Process complete command
+  if (stringComplete) {
+    processCommand(inputString);
+    inputString = "";
+    stringComplete = false;
   }
+  
+  // Removed printing when motors are in motion
+}
+
+void processCommand(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+  
+  // Handle home command
+  if (cmd.equals("h")) {
+    // First deactivate any active servo
+    if (activeServo >= 0) {
+      servos.move_servo(activeServo, servos.servos[activeServo].rest_pos);
+    }
+    
+    // Wait for servo to move to rest position
+    while (servos.is_moving()) {
+      servos.update();
+      delay(10);
+    }
+    
+    // Then go home
+    stepper.moveTo(0);
+    Serial.println("Returning to home position");
+    activeServo = -1;
+    return;
+  }
+  
+  // Handle servo ID
+  int servoNum = cmd.toInt();
+  if (servoNum >= 0 && servoNum < 4) {
+    // If a different servo is active, deactivate it first
+    if (activeServo >= 0 && activeServo != servoNum) {
+      servos.move_servo(activeServo, servos.servos[activeServo].rest_pos);
+      
+      // Wait for servo to move to rest position
+      while (servos.is_moving()) {
+        servos.update();
+        delay(10);
+      }
+    }
+    
+    // Move stepper to the specified position from TrialConfig.h
+    stepper.moveTo(STEPPER_POSITIONS[servoNum]);
+    Serial.print("Moving to position for servo ");
+    Serial.print(servoNum);
+    Serial.print(" (");
+    Serial.print(STEPPER_POSITIONS[servoNum]);
+    Serial.println(")");
+    
+    // Wait for stepper to reach position
+    while (stepper.isMoving()) {
+      stepper.update();
+      delay(10);
+    }
+    
+    // Activate the servo
+    servos.move_servo(servoNum, servos.servos[servoNum].active_pos);
+    Serial.print("Activating servo ");
+    Serial.println(servoNum);
+    activeServo = servoNum;
+    
+    return;
+  }
+  
+  // If we get here, command wasn't recognized
+  Serial.println("Unknown command. Use 0-3 for servos or 'h' for home");
 }

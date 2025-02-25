@@ -33,8 +33,8 @@ void setup() {
     
     pinMode(TRIGGER_PIN, INPUT);
 
-    // Move stepper to the initial position (200)
-    stepper.moveTo(200);
+    // // Move stepper to the initial position (200)
+    // stepper.moveTo(200);
     
     // Wait for stepper to reach initial position
     while(stepper.isMoving()) {

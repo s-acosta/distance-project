@@ -14,7 +14,6 @@ TrialNoHistory noHistoryTrial(servos, miniServos, stepper);
 // Constants
 const int TRIGGER_PIN = 9;
 const unsigned long REPORT_INTERVAL = 50;  // 50ms between reports
-const long HISTORY_START_POSITION = 200;   // Start position for history trials
 
 // Global variables
 unsigned long startTime = 0;
@@ -35,7 +34,7 @@ void setup() {
     pinMode(TRIGGER_PIN, INPUT);
 
     // Move stepper to the initial position (200)
-    stepper.moveTo(HISTORY_START_POSITION);
+    stepper.moveTo(200);
     
     // Wait for stepper to reach initial position
     while(stepper.isMoving()) {

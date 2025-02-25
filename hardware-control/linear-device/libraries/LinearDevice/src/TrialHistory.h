@@ -8,6 +8,7 @@
 
 enum class HistoryState {
     WAITING_FOR_INPUT,
+    STEPPER_TO_START,      // New state for moving to ID-based start position
     SERVO_TO_ACTIVE,
     STEPPER_TO_FINAL,
     FINAL_WAIT,

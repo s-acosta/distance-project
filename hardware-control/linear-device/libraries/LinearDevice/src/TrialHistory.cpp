@@ -22,9 +22,19 @@ void TrialHistory::processInput(const String &input)
         currentId = input.toInt();
         if (currentId >= 0 && currentId < 4)
         {
-            servos.move_servo(currentId, servos.servos[currentId].active_pos);
-            currentState = HistoryState::SERVO_TO_ACTIVE;
-            Serial.print("Starting sequence with ID: ");
+            // Set different starting positions based on servo ID
+            if (currentId == 0 || currentId == 1) {
+                // For servo 0 and 1, start at position 0
+                stepper.moveTo(150);
+            } else {
+                // For servo 2 and 3, start at position 100
+                stepper.moveTo(0);
+            }
+            
+            // Change state to a new state that waits for stepper to reach position
+            currentState = HistoryState::STEPPER_TO_START;
+            
+            Serial.print("Moving to start position for ID: ");
             Serial.println(currentId);
         }
     }
@@ -36,6 +46,16 @@ void TrialHistory::update()
     {
     case HistoryState::WAITING_FOR_INPUT:
         // Handled by processInput()
+        break;
+
+    case HistoryState::STEPPER_TO_START:
+        // Wait for stepper to reach the initial position (0 or 100)
+        if (!stepper.isMoving())
+        {
+            // Now that stepper is in position, activate the servo
+            servos.move_servo(currentId, servos.servos[currentId].active_pos);
+            currentState = HistoryState::SERVO_TO_ACTIVE;
+        }
         break;
 
     case HistoryState::SERVO_TO_ACTIVE:

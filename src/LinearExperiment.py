@@ -15,9 +15,9 @@ class LinearAnalysis:
         self.frames_time = np.load(self.activity_path + r'/frames_time.npy')
 
         container = self.load_stimulus()
-        self.stepper_steps = container['stim_data']['steps'][0][0][0]
-        self.stepper_time = container['stim_data']['time'][0][0][0]
-        self.stim_showed = container['stim_data']['distance_vec'][0][0][0]
+        self.stepper_steps = container['stim']['stepper_pos'][0][0][0]
+        self.stepper_time = container['stim']['time'][0][0][0]
+        self.stim_showed = container['stim']['distance_vec'][0][0][0]
 
         self.distance_traveled = np.interp(self.frames_time, self.stepper_time, self.stepper_steps) / 30
         self.repeat_start_time = np.arange(0, 20 * 25, 25) * 1000

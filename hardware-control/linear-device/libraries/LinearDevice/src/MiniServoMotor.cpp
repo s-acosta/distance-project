@@ -1,15 +1,16 @@
 #include "MiniServoMotor.h"
 #include "SharedPWM.h"
 
-// Helper function to create slower acceleration at start
+// Linear movement function (keeping original name for compatibility)
 int easeInPosition(unsigned long elapsed, unsigned long total_time, int start_pos, int end_pos) {
-    // Convert elapsed time to a 0-1 progress value
+    // Convert elapsed time to a 0-1 progress value (linear interpolation)
     float t = static_cast<float>(elapsed) / total_time;
     
-    // Apply easing - this creates a slower start (t squared)
-    t = t * t;
+    // Ensure t stays within bounds
+    if (t > 1.0f) t = 1.0f;
+    if (t < 0.0f) t = 0.0f;
     
-    // Convert back to position
+    // Linear interpolation formula
     int delta = end_pos - start_pos;
     return start_pos + (delta * t);
 }
@@ -34,6 +35,7 @@ bool MiniServoMotor::move_to_position(int id, int position) {
     if(id < 0 || id >= NUM_SERVOS) {
         return false;
     }
+
 
     if (position < 150 || position > 450) {
         return false;
@@ -98,10 +100,11 @@ void MiniServoMotor::update() {
                 mini_servos[active_servo].state = ServoState::IDLE;
                 active_servo = -1;
             } else {
-                // Use faster movement for return to rest (linear instead of eased)
-                float progress = static_cast<float>(elapsed) / MOVEMENT_TO_REST_TIME;
-                int delta = mini_servos[active_servo].rest_pos - mini_servos[active_servo].active_pos;
-                mini_servos[active_servo].current_pos = mini_servos[active_servo].active_pos + (delta * progress);
+                mini_servos[active_servo].current_pos = easeInPosition(
+                    elapsed, MOVEMENT_TO_REST_TIME,
+                    mini_servos[active_servo].active_pos,
+                    mini_servos[active_servo].rest_pos
+                );
             }
             break;
             

@@ -30,9 +30,8 @@ class MiniServoMotor {
         MiniServo mini_servos[NUM_SERVOS];
         
     private:
-        // Different timing constants for activation and rest movement
-        static const unsigned long MOVEMENT_TO_ACTIVE_TIME = 3000;  // 2 seconds movement time to active position
-        static const unsigned long MOVEMENT_TO_REST_TIME = 100;     // 0.1 seconds movement time to rest position
+        static const unsigned long MOVEMENT_TO_ACTIVE_TIME = 3000;  // 2 seconds to move to active position
+        static const unsigned long MOVEMENT_TO_REST_TIME = 100;     // 0.5 seconds to return to rest position
         static const unsigned long HOLD_TIME = 100;                 // 100ms hold time
         
         int active_servo;

@@ -82,7 +82,7 @@ void TrialNoHistory::update() {
     case NoHistoryState::SERVO_TO_REST:
         if (!servos.is_moving()) {
             // Change from original: Use position 200 instead of 0
-            stepper.moveTo(200); // Home position is now 200
+            stepper.moveTo(0); // Home position is now 200
             currentState = NoHistoryState::STEPPER_HOME;
         }
         break;

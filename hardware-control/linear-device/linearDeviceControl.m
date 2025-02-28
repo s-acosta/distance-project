@@ -52,8 +52,8 @@ serial_obj.UserData.MiniServoActive = [];
 configureCallback(serial_obj, "terminator", @readArduinoData);
 
 % Define trial timing constants
-HISTORY_TRIAL_TIME = 15;    % seconds per history trial
-NO_HISTORY_TRIAL_TIME = 10;  % seconds per no-history trial
+HISTORY_TRIAL_TIME = 17;    % seconds per history trial
+NO_HISTORY_TRIAL_TIME = 12;  % seconds per no-history trial
 
 % Set up trial sequences
 n_ids = length(options.servo_ids);  % Number of servo IDs
@@ -101,9 +101,10 @@ if options.random_flag
     history_sequence = history_sequence(perm);
 end
 
-% Combine the first trial with the rest of the sequence
-servo_sequence = [first_trial_id, servo_sequence];
-history_sequence = [first_trial_history, history_sequence];
+% % Combine the first trial with the rest of the sequence
+% servo_sequence = [first_trial_id, servo_sequence];
+% history_sequence = [first_trial_history, history_sequence];
+
 
 % Total number of trials includes the added first trial
 n_trials = length(servo_sequence);

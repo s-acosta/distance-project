@@ -127,7 +127,7 @@ void TrialHistory::update()
         if (!servos.is_moving())
         {
             // Change from original: Use position 150 instead of 0
-            stepper.moveTo(150); // Home position is now 150
+            stepper.moveTo(0); // Home position is now 150
             currentState = HistoryState::STEPPER_HOME;
         }
         break;

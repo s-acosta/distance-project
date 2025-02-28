@@ -38,7 +38,7 @@ private:
     
     // Timing variables
     unsigned long lastStepTime;
-    const unsigned long stepDelay = 5000; // Microseconds between steps
+    const unsigned long stepDelay = 4800; // Microseconds between steps
     const unsigned long pulseWidth = 10;  // Microseconds for step pulse
     
     // State machine variable

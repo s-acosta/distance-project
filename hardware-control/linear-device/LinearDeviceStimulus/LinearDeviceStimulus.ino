@@ -1,3 +1,12 @@
+#include <Communication.h>
+#include <MiniServoMotor.h>
+#include <ServoMotor.h>
+#include <SharedPWM.h>
+#include <StepperMotor.h>
+#include <TrialConfig.h>
+#include <TrialHistory.h>
+#include <TrialNoHistory.h>
+
 #include "TrialHistory.h"
 #include "TrialNoHistory.h"
 #include "SharedPWM.h"

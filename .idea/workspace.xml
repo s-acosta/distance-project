@@ -5,10 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="10569d02-e031-45b9-a9f3-fad730edf2d4" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/linear-notebooks/analysis-linear-stimulus.ipynb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/linear-notebooks/analysis-linear-stimulus.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/linear-notebooks/analysis-linear-stimulus.ipynb" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/linear-notebooks/analysis-linear.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/linear-notebooks/analysis-linear.ipynb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/LinearExperiment.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/LinearExperiment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/utils.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -60,7 +60,7 @@
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "com.github.copilot.settings.ApplicationConfigurable",
+    "settings.editor.selected.configurable": "com.claudemind.settings.ClaudeMindSettings",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
@@ -187,7 +187,7 @@
       <workItem from="1739559686854" duration="9000" />
       <workItem from="1740016130831" duration="9720000" />
       <workItem from="1740420934373" duration="192000" />
-      <workItem from="1740444748357" duration="7735000" />
+      <workItem from="1740444748357" duration="25874000" />
     </task>
     <servers />
   </component>

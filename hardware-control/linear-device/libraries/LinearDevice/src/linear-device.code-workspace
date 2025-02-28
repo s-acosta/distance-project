@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../../.."
+		},
+		{
+			"path": "../../../../../linear-notebooks"
+		},
+		{
+			"path": "../../../../../src"
+		}
+	],
+	"settings": {}
+}

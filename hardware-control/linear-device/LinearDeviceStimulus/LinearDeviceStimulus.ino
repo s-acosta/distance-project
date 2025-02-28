@@ -79,7 +79,8 @@ void sendReport() {
             Serial.print("i");
             Serial.print(currentId);
             Serial.print("a");
-            Serial.print(miniServos.is_moving() ? "1" : "0");
+            // Changed to use is_moving_to_active() instead of is_moving()
+            Serial.print(miniServos.is_moving_to_active() ? "1" : "0");
             Serial.print("t");
             Serial.print(currentTime - startTime);
             Serial.print(">");

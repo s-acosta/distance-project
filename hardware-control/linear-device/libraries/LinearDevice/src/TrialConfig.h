@@ -2,7 +2,7 @@
 #define TRIAL_CONFIG_H
 
 const long STEPPER_POSITIONS[] = {150, 350, 260, 465};
-const unsigned long POSITION_WAIT_TIME = 2000;  // 2 second wait
-const unsigned long SERVO_WAIT_TIME = 2000;     // 2 second wait
+const unsigned long PRE_ACTIVATION_WAIT_TIME = 2000;  // 2 second wait before activating mini servo
+const unsigned long POST_ACTIVATION_WAIT_TIME = 200;  // 200ms wait after mini servo activation
 
 #endif

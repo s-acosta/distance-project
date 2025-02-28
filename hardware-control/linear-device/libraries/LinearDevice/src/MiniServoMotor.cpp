@@ -120,3 +120,11 @@ void MiniServoMotor::update() {
 bool MiniServoMotor::is_moving() {
     return active_servo != -1;
 }
+
+bool MiniServoMotor::is_moving_to_active() {
+    if (active_servo == -1) return false;
+    
+    // Only return true if the servo is moving to active position or holding in active position
+    return (mini_servos[active_servo].state == ServoState::MOVING_TO_ACTIVE || 
+            mini_servos[active_servo].state == ServoState::HOLDING_ACTIVE);
+}

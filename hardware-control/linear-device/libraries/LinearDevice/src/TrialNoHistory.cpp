@@ -48,7 +48,7 @@ void TrialNoHistory::update() {
         break;
 
     case NoHistoryState::SERVO_WAIT:
-        if (millis() - waitStartTime >= SERVO_WAIT_TIME) {
+        if (millis() - waitStartTime >= PRE_ACTIVATION_WAIT_TIME) {
             miniServos.activate_servo(currentId);
             currentState = NoHistoryState::MINI_SERVO_ACTIVATE;
         }
@@ -72,7 +72,7 @@ void TrialNoHistory::update() {
         break;
         
     case NoHistoryState::POST_ACTIVATION_WAIT:
-        if (millis() - waitStartTime >= 200) // 200ms wait
+        if (millis() - waitStartTime >= POST_ACTIVATION_WAIT_TIME) // 200ms wait
         {
             servos.move_servo(currentId, servos.servos[currentId].rest_pos);
             currentState = NoHistoryState::SERVO_TO_REST;

@@ -116,7 +116,7 @@ void TrialHistory::update()
         break;
         
     case HistoryState::POST_ACTIVATION_WAIT:
-        if (millis() - waitStartTime >= 200) // 200ms wait
+        if (millis() - waitStartTime >= POST_ACTIVATION_WAIT_TIME) // 200ms wait
         {
             servos.move_servo(currentId, servos.servos[currentId].rest_pos);
             currentState = HistoryState::SERVO_TO_REST;

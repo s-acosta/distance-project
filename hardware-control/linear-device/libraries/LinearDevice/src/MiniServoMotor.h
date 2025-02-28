@@ -26,6 +26,10 @@ class MiniServoMotor {
         bool activate_servo(int id);
         void update();
         bool is_moving();
+        
+        // New method to check if servo is moving to active position
+        bool is_moving_to_active();
+        
         static const int NUM_SERVOS = 4;
         MiniServo mini_servos[NUM_SERVOS];
         

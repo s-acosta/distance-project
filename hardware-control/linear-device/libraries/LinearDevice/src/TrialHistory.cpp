@@ -91,7 +91,7 @@ void TrialHistory::update()
         break;
 
     case HistoryState::POSITION_WAIT:
-        if (millis() - waitStartTime >= POSITION_WAIT_TIME)
+        if (millis() - waitStartTime >= PRE_ACTIVATION_WAIT_TIME)
         {
             miniServos.activate_servo(currentId);
             currentState = HistoryState::MINI_SERVO_ACTIVATE;

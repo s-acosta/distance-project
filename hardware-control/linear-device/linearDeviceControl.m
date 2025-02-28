@@ -53,61 +53,45 @@ configureCallback(serial_obj, "terminator", @readArduinoData);
 
 % Define trial timing constants
 HISTORY_TRIAL_TIME = 17;    % seconds per history trial
-NO_HISTORY_TRIAL_TIME = 12;  % seconds per no-history trial
+NO_HISTORY_TRIAL_TIME = 10;  % seconds per no-history trial
 
 % Set up trial sequences
 n_ids = length(options.servo_ids);  % Number of servo IDs
 
-% Create the first trial: always servo ID 0 with no history
-first_trial_id = 0;
-first_trial_history = false;
-
-% Now create the rest of the trials based on the mode
 switch options.mode
-    case 'history'
-        % Set up remaining trials for history only
-        servo_sequence = repmat(options.servo_ids, 1, options.n_repeats);  % Only history trials
-        history_sequence = true(1, length(servo_sequence));  % All true for history
+        case 'history'
+            base_servo_sequence = repmat(options.servo_ids, 1);
+            base_history_sequence = true(1, length(base_servo_sequence));
         
-    case 'no-history'
-        % Set up remaining trials for no-history only
-        servo_sequence = repmat(options.servo_ids, 1, options.n_repeats);  % Only no-history trials
-        history_sequence = false(1, length(servo_sequence));  % All false for no-history
+        case 'no-history'
+            base_servo_sequence = repmat(options.servo_ids, 1);
+            base_history_sequence = false(1, length(base_servo_sequence));
         
-    case 'both'
-        % Set up remaining trials for both types
-        % Create base sequences for one complete set
-        base_servo_sequence = repelem(options.servo_ids, 2);  % e.g., [0 0 1 1 2 2 3 3]
-        base_history_sequence = repmat([true false], 1, n_ids);  % [1 0 1 0 1 0 1 0]
-        
-        % Repeat the base sequences if n_repeats > 1
-        servo_sequence = repmat(base_servo_sequence, 1, options.n_repeats);
-        history_sequence = repmat(base_history_sequence, 1, options.n_repeats);
+        case 'both'
+            % Create base sequence with each servo ID in both history and no-history
+            base_servo_sequence = repelem(options.servo_ids, 2);
+            base_history_sequence = repmat([true false], 1, length(options.servo_ids));
 end
 
-% Randomize trial order if requested (only for the trials after the first one)
-if options.random_flag
-    if strcmp(options.mode, 'both')
-        % Generate random permutation indices for n_ids pairs
-        perm = reshape(randperm(length(servo_sequence)), 2, []);  % Reshape to keep pairs together
-        perm = perm(:);  % Convert back to single column
-    else
-        % For single modes, just do a straight randomization
-        perm = randperm(length(servo_sequence));
-    end
+servo_sequence = [];
+history_sequence = [];
+
+for i = 1:options.n_repeats
+
+    if options.random_flag
+
+        perm = randperm(length(base_servo_sequence));
+        servo_sequence = [servo_sequence, base_servo_sequence(perm)];
+        history_sequence = [history_sequence, base_history_sequence(perm)];
     
-    % Apply permutation
-    servo_sequence = servo_sequence(perm);
-    history_sequence = history_sequence(perm);
+    else
+
+        servo_sequence = [servo_sequence, base_servo_sequence];
+        history_sequence = [history_sequence, base_servo_history_sequence];
+
+    end
+
 end
-
-% % Combine the first trial with the rest of the sequence
-% servo_sequence = [first_trial_id, servo_sequence];
-% history_sequence = [first_trial_history, history_sequence];
-
-
-% Total number of trials includes the added first trial
-n_trials = length(servo_sequence);
 
 % Calculate total time and display estimates
 total_time = sum(history_sequence) * HISTORY_TRIAL_TIME + ...
@@ -115,7 +99,7 @@ total_time = sum(history_sequence) * HISTORY_TRIAL_TIME + ...
 
 % Display time and trial estimates
 fprintf('\nTrial Summary:\n');
-fprintf('Total trials: %d (including initial calibration trial)\n', n_trials);
+fprintf('Total trials: %d\n', length(servo_sequence));
 fprintf('History trials: %d\n', sum(history_sequence));
 fprintf('No-history trials: %d\n\n', sum(~history_sequence));
 
@@ -139,7 +123,7 @@ trial_start_time = zeros(1, length(servo_sequence)); % Initialize trial start ti
 trial_end_time = zeros(1, length(servo_sequence)); % Initialize trial end time array
 
 i_trial = 1;
-while i_trial <= n_trials
+while i_trial <= length(servo_sequence)
     % read input
     serial_obj = readArduinoData(serial_obj);
     trial_start_time(i_trial) = toc;
@@ -158,16 +142,10 @@ while i_trial <= n_trials
     else
         mode_str = 'no history';
     end
-    
-    if i_trial == 1
-        fprintf('Initial calibration trial: Servo %d (%s mode)\n', ...
-            servo_sequence(i_trial), mode_str);
-    else
-        fprintf('Trial %d/%d: Servo %d (%s mode)\n', ...
-            i_trial-1, n_trials-1, ... % Adjust display to not count first trial
-            servo_sequence(i_trial), ...
-            mode_str);
-    end
+    fprintf('Trial %d/%d: Servo %d (%s mode)\n', ...
+        i_trial, length(servo_sequence), ...
+        servo_sequence(i_trial), ...
+        mode_str);
     
     % Wait for trial completion
     if history_sequence(i_trial)

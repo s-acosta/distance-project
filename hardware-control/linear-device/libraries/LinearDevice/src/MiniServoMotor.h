@@ -26,7 +26,7 @@ class MiniServoMotor {
         bool activate_servo(int id);
         void update();
         bool is_moving();
-        
+
         // New method to check if servo is moving to active position
         bool is_moving_to_active();
         
@@ -34,7 +34,7 @@ class MiniServoMotor {
         MiniServo mini_servos[NUM_SERVOS];
         
     private:
-        static const unsigned long MOVEMENT_TO_ACTIVE_TIME = 3000;  // 2 seconds to move to active position
+        static const unsigned long MOVEMENT_TO_ACTIVE_TIME = 2500;  // 2 seconds to move to active position
         static const unsigned long MOVEMENT_TO_REST_TIME = 100;     // 0.5 seconds to return to rest position
         static const unsigned long HOLD_TIME = 100;                 // 100ms hold time
         

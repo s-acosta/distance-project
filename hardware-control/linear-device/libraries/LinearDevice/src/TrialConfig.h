@@ -3,6 +3,6 @@
 
 const long STEPPER_POSITIONS[] = {150, 350, 260, 465};
 const unsigned long PRE_ACTIVATION_WAIT_TIME = 2000;  // 2 second wait before activating mini servo
-const unsigned long POST_ACTIVATION_WAIT_TIME = 200;  // 200ms wait after mini servo activation
+const unsigned long POST_ACTIVATION_WAIT_TIME = 100;  // 200ms wait after mini servo activation
 
 #endif

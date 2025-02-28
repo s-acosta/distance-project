@@ -35,7 +35,6 @@ bool MiniServoMotor::move_to_position(int id, int position) {
         return false;
     }
 
-
     if (position < 150 || position > 450) {
         return false;
     }
@@ -72,14 +71,14 @@ void MiniServoMotor::update() {
     
     switch(mini_servos[active_servo].state) {
         case ServoState::MOVING_TO_ACTIVE:
-            if (elapsed >= MOVEMENT_TIME) {
+            if (elapsed >= MOVEMENT_TO_ACTIVE_TIME) {
                 mini_servos[active_servo].current_pos = mini_servos[active_servo].active_pos;
                 mini_servos[active_servo].state = ServoState::HOLDING_ACTIVE;
                 mini_servos[active_servo].start_time = millis();
             } else {
                 // Use easing function for smoother start
                 mini_servos[active_servo].current_pos = easeInPosition(
-                    elapsed, MOVEMENT_TIME,
+                    elapsed, MOVEMENT_TO_ACTIVE_TIME,
                     mini_servos[active_servo].rest_pos,
                     mini_servos[active_servo].active_pos
                 );
@@ -94,16 +93,15 @@ void MiniServoMotor::update() {
             break;
             
         case ServoState::MOVING_TO_REST:
-            if (elapsed >= MOVEMENT_TIME) {
+            if (elapsed >= MOVEMENT_TO_REST_TIME) {
                 mini_servos[active_servo].current_pos = mini_servos[active_servo].rest_pos;
                 mini_servos[active_servo].state = ServoState::IDLE;
                 active_servo = -1;
             } else {
-                mini_servos[active_servo].current_pos = easeInPosition(
-                    elapsed, MOVEMENT_TIME,
-                    mini_servos[active_servo].active_pos,
-                    mini_servos[active_servo].rest_pos
-                );
+                // Use faster movement for return to rest (linear instead of eased)
+                float progress = static_cast<float>(elapsed) / MOVEMENT_TO_REST_TIME;
+                int delta = mini_servos[active_servo].rest_pos - mini_servos[active_servo].active_pos;
+                mini_servos[active_servo].current_pos = mini_servos[active_servo].active_pos + (delta * progress);
             }
             break;
             

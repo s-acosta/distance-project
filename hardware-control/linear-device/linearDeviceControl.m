@@ -87,7 +87,7 @@ for i = 1:options.n_repeats
     else
 
         servo_sequence = [servo_sequence, base_servo_sequence];
-        history_sequence = [history_sequence, base_servo_history_sequence];
+        history_sequence = [history_sequence, base_history_sequence];
 
     end
 

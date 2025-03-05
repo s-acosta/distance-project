@@ -92,8 +92,15 @@ if options.random_flag
         perm = reshape(randperm(length(servo_sequence)), 2, []);  % Reshape to keep pairs together
         perm = perm(:);  % Convert back to single column
     else
+<<<<<<< HEAD
         % For single modes, just do a straight randomization
         perm = randperm(length(servo_sequence));
+=======
+
+        servo_sequence = [servo_sequence, base_servo_sequence];
+        history_sequence = [history_sequence, base_history_sequence];
+
+>>>>>>> f6ddde4b0ea93fe3b2fae91930a0b759bfb35b02
     end
     
     % Apply permutation

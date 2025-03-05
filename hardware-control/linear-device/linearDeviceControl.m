@@ -12,6 +12,8 @@ function stim_data = linearDeviceControl(arduino_port, options)
 %   trigger_mode - 'DAQ', 'arduino', or 'none' (default: 'none')
 %   trigger_port - Port for trigger device if needed
 %   save_flag - Whether to save data (default: false)
+%   mode - 'history', 'no-history', or 'both' (default: 'both')
+%   monocular - Whether to include monocular sequence (default: false)
 
 arguments
     arduino_port char
@@ -22,6 +24,29 @@ arguments
     options.trigger_port = []
     options.save_flag (1,1) logical = false
     options.mode char {mustBeMember(options.mode,['history','no-history','both'])} = 'both'
+    options.monocular (1,1) logical = false
+end
+
+% Check if monocular option is enabled
+if options.monocular
+    % Check if n_repeats is a multiple of 4
+    if mod(options.n_repeats, 4) ~= 0
+        original_repeats = options.n_repeats;
+        % Round up to nearest multiple of 4
+        options.n_repeats = ceil(options.n_repeats / 4) * 4;
+        warning(['For proper monocular sequence blocks, n_repeats must be a multiple of 4. ' ...
+                'Adjusting from %d to %d repeats.'], original_repeats, options.n_repeats);
+    end
+    
+    % Recalculate and show total number of trials
+    switch options.mode
+        case {'history', 'no-history'}
+            total_trials = length(options.servo_ids) * options.n_repeats;
+        case 'both'
+            total_trials = length(options.servo_ids) * 2 * options.n_repeats;
+    end
+    
+    fprintf('Using %d repeats for a total of %d trials\n', options.n_repeats, total_trials);
 end
 
 % Setup trigger if requested
@@ -59,38 +84,74 @@ NO_HISTORY_TRIAL_TIME = 10;  % seconds per no-history trial
 n_ids = length(options.servo_ids);  % Number of servo IDs
 
 switch options.mode
+    case 'history'
+        base_servo_sequence = repmat(options.servo_ids, 1);
+        base_history_sequence = true(1, length(base_servo_sequence));
 
-        case 'history'
-            base_servo_sequence = repmat(options.servo_ids, 1);
-            base_history_sequence = true(1, length(base_servo_sequence));
+    case 'no-history'
+        base_servo_sequence = repmat(options.servo_ids, 1);
+        base_history_sequence = false(1, length(base_servo_sequence));
 
-        case 'no-history'
-            base_servo_sequence = repmat(options.servo_ids, 1);
-            base_history_sequence = false(1, length(base_servo_sequence));
-
-        case 'both'
-            % Create base sequence with each servo ID in both history and no-history
-            base_servo_sequence = repelem(options.servo_ids, 2);
-            base_history_sequence = repmat([true false], 1, length(options.servo_ids));
-
+    case 'both'
+        % Create base sequence with each servo ID in both history and no-history
+        base_servo_sequence = repelem(options.servo_ids, 2);
+        base_history_sequence = repmat([true false], 1, length(options.servo_ids));
 end
 
 servo_sequence = [];
 history_sequence = [];
 
 for i = 1:options.n_repeats
-
     if options.random_flag
         perm = randperm(length(base_servo_sequence));
         servo_sequence = [servo_sequence, base_servo_sequence(perm)];
         history_sequence = [history_sequence, base_history_sequence(perm)];
-
     else
         servo_sequence = [servo_sequence, base_servo_sequence];
         history_sequence = [history_sequence, base_history_sequence];
-
     end
+end
 
+% Create monocular sequence if enabled
+n_trials = length(servo_sequence);
+monocular_sequence = [];
+
+if options.monocular
+    % Since we ensured n_repeats is a multiple of 4, we can create a pattern
+    % that repeats the base_sequence exactly once for each quarter
+    
+    % Calculate how many repeats constitute one quarter of the total
+    quarter_repeats = options.n_repeats / 4;
+    
+    % Create sequence with each quarter having a specific monocular status
+    switch options.mode
+        case {'history', 'no-history'}
+            % Calculate quarter length in trials
+            quarter_length = length(options.servo_ids) * quarter_repeats;
+            
+            % Create sequence blocks
+            monocular_sequence = [
+                true(1, quarter_length), ...    % First quarter: true
+                false(1, quarter_length), ...   % Second quarter: false
+                true(1, quarter_length), ...    % Third quarter: true
+                false(1, quarter_length)        % Fourth quarter: false
+            ];
+        
+        case 'both'
+            % Calculate quarter length in trials
+            quarter_length = length(options.servo_ids) * 2 * quarter_repeats;
+            
+            % Create sequence blocks
+            monocular_sequence = [
+                true(1, quarter_length), ...    % First quarter: true
+                false(1, quarter_length), ...   % Second quarter: false
+                true(1, quarter_length), ...    % Third quarter: true
+                false(1, quarter_length)        % Fourth quarter: false
+            ];
+    end
+else
+    % If not enabled, create a sequence of all false (no monocular)
+    monocular_sequence = false(1, n_trials);
 end
 
 % Calculate total time and display estimates
@@ -99,16 +160,37 @@ total_time = sum(history_sequence) * HISTORY_TRIAL_TIME + ...
 
 % Display time and trial estimates
 fprintf('\nTrial Summary:\n');
-fprintf('Total trials: %d\n', length(servo_sequence));
+fprintf('Total trials: %d\n', n_trials);
 fprintf('History trials: %d\n', sum(history_sequence));
-fprintf('No-history trials: %d\n\n', sum(~history_sequence));
+fprintf('No-history trials: %d\n', sum(~history_sequence));
 
-fprintf('Time Estimates:\n');
+if options.monocular
+    fprintf('Monocular sequence switches:\n');
+    
+    % Find where the sequence changes (transitions between true/false)
+    transitions = find(diff([false, monocular_sequence]) ~= 0);
+    
+    % Display the transitions in a readable format
+    for i = 1:length(transitions)
+        trial_num = transitions(i);
+        is_monocular = monocular_sequence(trial_num);
+        
+        if is_monocular
+            fprintf('  Trial %3d: Switch to monocular\n', trial_num);
+        else
+            fprintf('  Trial %3d: Switch to binocular\n', trial_num);
+        end
+    end
+    
+    fprintf('Monocular trials: %d, Binocular trials: %d\n', sum(monocular_sequence), sum(~monocular_sequence));
+end
+
+fprintf('\nTime Estimates:\n');
 fprintf('Total duration: %.2f minutes (%.2f seconds)\n', total_time/60, total_time);
 fprintf('History trials: %d (%.2f minutes)\n', sum(history_sequence), sum(history_sequence) * HISTORY_TRIAL_TIME/60);
-fprintf('No-history trials: %d (%.2f minutes)\n\n', sum(~history_sequence), sum(~history_sequence) * NO_HISTORY_TRIAL_TIME/60);
+fprintf('No-history trials: %d (%.2f minutes)\n', sum(~history_sequence), sum(~history_sequence) * NO_HISTORY_TRIAL_TIME/60);
 
-fprintf('Press enter when ready...\n');
+fprintf('\nPress enter when ready...\n');
 pause();
 
 % Start trigger if enabled
@@ -147,11 +229,30 @@ for i_trial = 1:n_trials
         trial_duration = NO_HISTORY_TRIAL_TIME;
     end
     
-    % Display trial info
-    fprintf('Trial %d/%d: Servo %d (%s mode)\n', ...
-        i_trial, n_trials, ...
-        servo_sequence(i_trial), ...
-        mode_str);
+     % Get monocular status for display
+    if options.monocular
+        if monocular_sequence(i_trial)
+            eye_mode = 'monocular';
+        else
+            eye_mode = 'binocular';
+        end
+    else
+        eye_mode = '';
+    end
+    
+    % Display trial info with monocular status if enabled
+    if options.monocular
+        fprintf('Trial %d/%d: Servo %d (%s mode, %s)\n', ...
+            i_trial, n_trials, ...
+            servo_sequence(i_trial), ...
+            mode_str, ...
+            eye_mode);
+    else
+        fprintf('Trial %d/%d: Servo %d (%s mode)\n', ...
+            i_trial, n_trials, ...
+            servo_sequence(i_trial), ...
+            mode_str);
+    end
     
     % Calculate when this trial should end to maintain fixed intervals
     if i_trial == 1
@@ -190,6 +291,11 @@ stim_data.trial_sequence = servo_sequence;
 stim_data.history_sequence = history_sequence;
 stim_data.trial_start_time = trial_start_time;
 stim_data.trial_end_time = trial_end_time;
+
+% Include monocular sequence in output data if enabled
+if options.monocular
+    stim_data.monocular_sequence = monocular_sequence;
+end
 
 delete(serial_obj);
 

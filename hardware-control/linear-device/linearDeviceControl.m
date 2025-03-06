@@ -266,7 +266,6 @@ for i_trial = 1:n_trials
     % Continuously update data until it's time for the next trial
     while toc(experiment_start_time) < next_trial_start_time
         serial_obj = readArduinoData(serial_obj);
-        pause(0.01);  % Small pause to prevent CPU hogging
     end
 
     % Record trial end time

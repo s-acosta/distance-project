@@ -2,3 +2,7 @@
 /.idea
 /.idea
 *.mat
+linear-notebooks/distance_comparison_plots/cell_213_distance_comparison.png
+*.json
+*.png
+*.asv

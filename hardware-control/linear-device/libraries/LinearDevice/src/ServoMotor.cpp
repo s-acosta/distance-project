@@ -6,7 +6,7 @@ ServoMotor::ServoMotor() {
     servos[0] = {.pin = 0,  .rest_pos = 170, .active_pos = 435, .current_pos = 170, .target_pos = 170};
     servos[1] = {.pin = 4,  .rest_pos = 416, .active_pos = 154, .current_pos = 416, .target_pos = 416};
     servos[2] = {.pin = 8,  .rest_pos = 415, .active_pos = 190, .current_pos = 418, .target_pos = 418};
-    servos[3] = {.pin = 12, .rest_pos = 180, .active_pos = 432, .current_pos = 180, .target_pos = 180};
+    servos[3] = {.pin = 12, .rest_pos = 180, .active_pos = 438, .current_pos = 180, .target_pos = 180};
     active_servo = -1;
 }
 

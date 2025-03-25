@@ -39,20 +39,26 @@ def setup_plot_style():
     return colors
 
 
-def import_vars_from_matlab(container, structure_name, locals_dict):
+def import_vars_from_matlab(container, structure_name):
     """Extract all fields from a MATLAB structure and create variables.
 
     Args:
         container: The loaded .mat file
         structure_name: Name of the structure (e.g., 'stim')
-        locals_dict: The local variables dictionary (pass 'locals()')
+        locals_dict: Dictionary to store the extracted variables
+
+    Returns:
+        Dictionary containing field names and their values
 
     Example:
-        create_vars_from_matlab(container, 'stim', locals())
+        stim_params = import_vars_from_matlab(container, 'stim', {})
     """
+
+    locals_dict = {}
+
     if structure_name not in container:
         print(f"Structure {structure_name} not found")
-        return
+        return locals_dict
 
     structure = container[structure_name]
     field_names = structure.dtype.names
@@ -68,5 +74,5 @@ def import_vars_from_matlab(container, structure_name, locals_dict):
                 print(f"Warning: Could not extract {field}")
                 locals_dict[field] = None
 
-    return field_names
+    return locals_dict
 

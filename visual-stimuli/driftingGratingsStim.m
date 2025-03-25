@@ -22,7 +22,7 @@ function stim_data = driftingGratingsStim(options)
 % See also: DriftingGrating, StimulusManager
 
     arguments
-        options.screen_id (1,1) double = 4 % Screen ID for presentation
+        options.screen_id (1,1) double = 1 % Screen ID for presentation
         options.n_orientations (1,1) double = 2 % Orientation pool
         options.n_repeats (1,1) double {mustBePositive, mustBeInteger} = 2 % Repeats of each presentation
         options.pre_time (1,1) double {mustBeNonnegative} = 2 % seconds preceding stimulus
@@ -42,7 +42,7 @@ function stim_data = driftingGratingsStim(options)
     % Create the presentation sequence with randomization if requested
     stim_data.pre_time_start = zeros(1, options.n_repeats * options.n_orientations);
     stim_data.on_time_start = zeros(1, options.n_repeats * options.n_orientations);
-    stim_data.post_time_start = zeros(1, options.n_repeats * options.n_orientations);
+    stim_data.on_time_start = zeros(1, options.n_repeats * options.n_orientations);
     
     orientation_sequence = [];
     for r = 1:options.n_repeats
@@ -58,52 +58,57 @@ function stim_data = driftingGratingsStim(options)
 
     % Store the sequence in the output structure
     stim_data.orientation_sequence = orientation_sequence;
+    n_presentations = length(orientation_sequence);
     
     % Create stimulus objects
-    try
-        for i = 1:length(orientation_sequence)
-                visual_stimulus(i) = DriftingGrating(orientation_sequence(i));
-        end
-    catch ME
-        error('Failed to create DriftingGrating objects: %s', ME.message);
+
+    for i = 1:length(orientation_sequence)
+        visual_stimulus(i) = DriftingGrating(orientation_sequence(i));
     end
 
     % Calculate the time it will take to present the stimulus
     total_time = options.pre_time + options.on_time + options.post_time;
     fprintf('Total number of trials: %d\n', options.n_repeats * options.n_orientations);
-    fprintf('Stimulus presentation will take %.2f seconds\n', total_time);
-    fprintf('Total time for all repeats: %.2f seconds\n', total_time * options.n_repeats);
-    
+    fprintf('Each trial will take %.2f seconds\n', total_time);
+    fprintf('Total time for all trials: %.2f seconds\n', total_time * n_presentations);
+    fprintf('Total time for all trials: %.2f minutes\n', total_time * n_presentations/60);
+
     pause()
 
     % Instantiate and configure stimulus manager
-    try
-        manager = StimulusManager(visual_stimulus);
-        manager.setScreenID(options.screen_id);
-        manager.initialize();
-        manager.setTrigger(options.DAQ_flag);
-        start_time = tic;
-        
-        % Start presentation
-        manager.start();
-        
-        % Present the stimulus according to the sequence
-        for  i = 1:length(orientation_sequence)
-           
-                % Record the start time of the pre-time
-                stim_data.pre_time_start(i) = toc(start_time);
-                stim_data.on_time_start(i) = toc(start_time)+2;
 
-                % Present the stimulus
-                manager.present(i);
+    manager = StimulusManager(visual_stimulus);
 
-                % Record the end time of the post-time
-                stim_data.post_time_start(i) = toc(start_time);
-                
-        end
-        
-        % Clean up
-         finish_time = toc(start_time);
-        manager.finish();
+    manager.timer.on_time = options.on_time;
+    manager.timer.pre_time = options.pre_time;
+    manager.timer.post_time = options.post_time;
+    manager.timer.n_presentations = n_presentations;
+    manager.timer.n_repeats = 1;
+
+    manager.setScreenID(options.screen_id);
+    manager.initialize();
+    
+    manager.setTrigger(options.DAQ_flag);
+
+    % Start presentation
+    start_time = tic;
+    manager.start();
+    
+    % Present the stimulus according to the sequence
+    for  i = 1:length(orientation_sequence)
+
+        % Record the start time of the pre-time
+        stim_data.pre_time_start(i) = toc(start_time);
+        stim_data.on_time_start(i) = stim_data.pre_time_start(i)+options.pre_time;
+        stim_data.on_time_end(i) = stim_data.on_time_start(i)+options.on_time;
+
+        % Present the stimulus
+        manager.present(i);
+
+    end
+
+    % Clean up
+    finish_time = toc(start_time);
+    manager.finish();
 
 end

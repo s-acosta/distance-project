@@ -77,7 +77,7 @@ serial_obj.UserData.MiniServoActive = [];
 configureCallback(serial_obj, "terminator", @readArduinoData);
 
 % Define trial timing constants
-HISTORY_TRIAL_TIME = 17;    % seconds per history trial
+HISTORY_TRIAL_TIME = 15;    % seconds per history trial
 NO_HISTORY_TRIAL_TIME = 10;  % seconds per no-history trial
 
 % Set up trial sequences

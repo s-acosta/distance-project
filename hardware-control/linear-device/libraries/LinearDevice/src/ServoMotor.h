@@ -22,7 +22,7 @@ class ServoMotor {
         void update();
         bool is_moving();
         int NUM_SERVOS = 4;
-        unsigned MOVEMENT_TIME = 250;
+        unsigned MOVEMENT_TIME = 100;
         
     private:
         unsigned long last_update;

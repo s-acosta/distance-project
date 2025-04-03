@@ -78,7 +78,7 @@ configureCallback(serial_obj, "terminator", @readArduinoData);
 
 % Define trial timing constants
 HISTORY_TRIAL_TIME = 15;    % seconds per history trial
-NO_HISTORY_TRIAL_TIME = 10;  % seconds per no-history trial
+NO_HISTORY_TRIAL_TIME = 12;  % seconds per no-history trial
 
 % Set up trial sequences
 n_ids = length(options.servo_ids);  % Number of servo IDs

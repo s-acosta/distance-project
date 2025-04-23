@@ -54,7 +54,6 @@ void setup() {
         triggerEnabled = true;
     }
 
-
     startTime = millis();  // Initial start time
 
     // Print that Arduino is ready

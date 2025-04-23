@@ -103,12 +103,14 @@ class ActivityLoader:
 
     def import_timing_data(self):
 
-        tseries_data_filename = self.path + '/suite2p/TSeriesData.xml'
+        # Find any XML file in the suite2p directory
+        xml_files = [f for f in os.listdir(self.path + '/suite2p') if f.endswith('.xml')]
+        tseries_data_filename = self.path + '/suite2p/' + xml_files[0] if xml_files else None
         frames_time_filename = self.path + '/suite2p/plane0/frames_time.npy'
 
         if os.path.isfile(frames_time_filename):
             self.frames_time = np.load(frames_time_filename)
-        elif os.path.isfile(tseries_data_filename):
+        elif tseries_data_filename and os.path.isfile(tseries_data_filename):
             data_frame = pd.read_xml(tseries_data_filename, xpath=".//Frame")
             self.frames_time = data_frame['relativeTime'].values * 1000
             np.save(self.path + '/suite2p/plane0/frames_time.npy', self.frames_time)

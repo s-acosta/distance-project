@@ -8,3 +8,5 @@ linear-notebooks/distance_comparison_plots/cell_213_distance_comparison.png
 *.asv
 *.code-workspace
 /src/__pycache__
+/.venv
+/.venv

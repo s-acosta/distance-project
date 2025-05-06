@@ -31,8 +31,8 @@ public:
     bool isComplete() const;
 
 private:
-    static const long STEPPER_FINAL_POS = 900;
-    static const unsigned long FINAL_WAIT_TIME = 200;
+    static const long STEPPER_FINAL_POS = 800;
+    static const unsigned long FINAL_WAIT_TIME = 100;
     static const unsigned long MINI_SERVO_HOLD_TIME = 100;
 
     ServoMotor& servos;

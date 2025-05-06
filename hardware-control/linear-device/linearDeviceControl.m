@@ -27,14 +27,25 @@ arguments
     options.monocular (1,1) logical = false
 end
 
+% Define trial timing constants
+HISTORY_TRIAL_TIME = 15;    % seconds per history trial
+
+ % seconds per no-history trial
+SERVO_MOVEMENT_TIME = 500;
+NO_HISTORY_TRIAL_TIME = 13 + 2*SERVO_MOVEMENT_TIME/1000; 
+PRE_ACTIVATION_WAIT_TIME = 2000;
+MOVEMENT_TO_ACTIVE_TIME = 2000;
+MOVEMENT_TO_REST_TIME = 2000;
+HOLD_TIME = 100;
+
 % Check if monocular option is enabled
 if options.monocular
     % Check if n_repeats is a multiple of 4
-    if mod(options.n_repeats, 4) ~= 0
+    if mod(options.n_repeats, 8) ~= 0
         original_repeats = options.n_repeats;
-        % Round up to nearest multiple of 4
-        options.n_repeats = ceil(options.n_repeats / 4) * 4;
-        warning(['For proper monocular sequence blocks, n_repeats must be a multiple of 4. ' ...
+        % Round up to nearest multiple of 8
+        options.n_repeats = ceil(options.n_repeats / 8) * 8;
+        warning(['For proper monocular sequence blocks, n_repeats must be a multiple of 8. ' ...
                 'Adjusting from %d to %d repeats.'], original_repeats, options.n_repeats);
     end
     
@@ -75,10 +86,6 @@ serial_obj.UserData.MiniServoActive = [];
 
 % Set up callback function for data reading
 configureCallback(serial_obj, "terminator", @readArduinoData);
-
-% Define trial timing constants
-HISTORY_TRIAL_TIME = 15;    % seconds per history trial
-NO_HISTORY_TRIAL_TIME = 12;  % seconds per no-history trial
 
 % Set up trial sequences
 n_ids = length(options.servo_ids);  % Number of servo IDs
@@ -121,7 +128,7 @@ if options.monocular
     % that repeats the base_sequence exactly once for each quarter
     
     % Calculate how many repeats constitute one quarter of the total
-    quarter_repeats = options.n_repeats / 4;
+    quarter_repeats = options.n_repeats / 8;
     
     % Create sequence with each quarter having a specific monocular status
     switch options.mode
@@ -133,6 +140,10 @@ if options.monocular
             monocular_sequence = [
                 true(1, quarter_length), ...    % First quarter: true
                 false(1, quarter_length), ...   % Second quarter: false
+                true(1, quarter_length), ...    % Third quarter: true
+                false(1, quarter_length),...       % Fourth quarter: false
+                true(1, quarter_length), ...    % Third quarter: true
+                false(1, quarter_length),...       % Fourth quarter: false
                 true(1, quarter_length), ...    % Third quarter: true
                 false(1, quarter_length)        % Fourth quarter: false
             ];
@@ -290,6 +301,12 @@ stim_data.trial_sequence = servo_sequence;
 stim_data.history_sequence = history_sequence;
 stim_data.trial_start_time = trial_start_time;
 stim_data.trial_end_time = trial_end_time;
+
+stim_data.MOVEMENT_TO_ACTIVE_TIME = MOVEMENT_TO_ACTIVE_TIME;
+stim_data.MOVEMENT_TO_REST_TIME = MOVEMENT_TO_REST_TIME;
+stim_data.HOLD_TIME = HOLD_TIME;
+stim_data.PRE_ACTIVATION_WAIT_TIME = PRE_ACTIVATION_WAIT_TIME ;
+stim_data.SERVO_MOVEMENT_TIME = SERVO_MOVEMENT_TIME;
 
 % Include monocular sequence in output data if enabled
 if options.monocular

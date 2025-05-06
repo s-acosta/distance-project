@@ -16,9 +16,9 @@ int easeInPosition(unsigned long elapsed, unsigned long total_time, int start_po
 }
 
 MiniServoMotor::MiniServoMotor() {
-    mini_servos[0] = {.pin = 3,  .rest_pos = 434, .active_pos = 269, .current_pos = 230, .state = ServoState::IDLE};
-    mini_servos[1] = {.pin = 7,  .rest_pos = 445, .active_pos = 270, .current_pos = 446, .state = ServoState::IDLE};
-    mini_servos[2] = {.pin = 11, .rest_pos = 435, .active_pos = 265, .current_pos = 435, .state = ServoState::IDLE};
+    mini_servos[0] = {.pin = 3,  .rest_pos = 440, .active_pos = 262, .current_pos = 230, .state = ServoState::IDLE};
+    mini_servos[1] = {.pin = 7,  .rest_pos = 447, .active_pos = 272, .current_pos = 446, .state = ServoState::IDLE};
+    mini_servos[2] = {.pin = 11, .rest_pos = 438, .active_pos = 268, .current_pos = 435, .state = ServoState::IDLE};
     mini_servos[3] = {.pin = 15, .rest_pos = 436, .active_pos = 260, .current_pos = 435, .state = ServoState::IDLE};
     active_servo = -1;
 }

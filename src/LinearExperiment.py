@@ -11,7 +11,7 @@ from src.utils import setup_plot_style, import_vars_from_matlab, create_new_resu
 colors = setup_plot_style()
 from path_setup import setup_project_path
 from src.ActivityPipelines import ActivityLoader
-
+import pandas as pd
 from scipy.stats import f_oneway, ttest_ind
 from scipy.ndimage import gaussian_filter1d
 
@@ -159,14 +159,14 @@ class LinearAnalysis:
 
 class LinearDevice:
 
-    def __init__(self, session_path, response_mode='dFF'):
-        
+    def __init__(self, session_path, response_mode='dFF', tau=None):
+
         self.session_path = session_path
         self.results_path = create_new_result_dir(self.session_path, r'results')
         self.stimulus_path = os.path.join(self.session_path, r'stimulus')
         self.activity_path = os.path.join(self.session_path, r'suite2p\plane0')
 
-        self._load_activity()
+        self._load_activity(tau)
         self._load_stimulus_variables()
         self._synchronize_stimulus_and_activity()
 
@@ -180,8 +180,11 @@ class LinearDevice:
             self.response = self.spikes
         elif self.response_mode == 'spikes-zscore':
             # do gaussian smoothing
-            self.response = (self.spikes - np.mean(self.spikes)) / np.std(self.spikes)
-            self.response = gaussian_filter1d(self.response, 1.5, axis=1)
+            self.response = gaussian_filter1d(self.spikes, 3, axis=1)
+            # normalize by baseline response
+            baseline_mean, baseline_std = self.get_baseline_response()
+            # Calculate z-score using baseline mean and std
+            self.response = (self.response - baseline_mean[:, np.newaxis]) / (baseline_std[:, np.newaxis] + 1e-10)  # Add small constant to avoid division by zero
         else:
             raise Exception('Unknown activity mode')
         
@@ -225,41 +228,41 @@ class LinearDevice:
         try:
             self.servo_movement_time = locals_dict['SERVO_MOVEMENT_TIME'][0]
         except:
-            print('No servo movement time found')
+            print('No servo movement time found, using 100ms')
             self.servo_movement_time = 100
 
         # Try to get miniservo_to_active_time
         try:
             self.miniservo_to_active_time = locals_dict['MOVEMENT_TO_ACTIVE_TIME'][0]
         except:
-            print('No miniservo to active time found')
+            print('No miniservo to active time found, using 2500ms')
             self.miniservo_to_active_time = 2500
             
         # Try to get miniservo_hold
         try:
             self.miniservo_hold = locals_dict['HOLD_TIME'][0]
         except:
-            print('No miniservo hold time found')
+            print('No miniservo hold time found, using 100ms')
             self.miniservo_hold = 100
             
         # Try to get miniservo_to_inactive_time
         try:
             self.miniservo_to_inactive_time = locals_dict['MOVEMENT_TO_REST_TIME'][0]
         except:
-            print('No miniservo to inactive time found')
+            print('No miniservo to inactive time found, using 2500ms')
             self.miniservo_to_inactive_time = 2500
             
         # Try to get miniservo_pre_time
         try:
             self.miniservo_pre_time = locals_dict['PRE_ACTIVATION_WAIT_TIME'][0]
         except:
-            print('No miniservo pre time found')
+            print('No miniservo pre time found, using 1000ms')
             self.miniservo_pre_time = 1000
 
-    def _load_activity(self):
+    def _load_activity(self, tau=None):
 
         try:
-            D = ActivityLoader(self.session_path)
+            D = ActivityLoader(self.session_path, tau)
             self.frames_time = D.frames_time
             self.dFF = D.dFF
             self.spikes = D.spikes
@@ -337,6 +340,33 @@ class LinearDevice:
 
         return on_start, on_end
     
+    def get_baseline_response(self, pre_time = 1000):
+
+        baseline_mean = np.zeros(self.response.shape[0])
+        baseline_std = np.zeros(self.response.shape[0])
+
+        for idx in range(self.response.shape[0]):
+            
+            off_responses = []
+            for repeat in range(len(self.trial_sequence)):
+                on_start, _ = self.get_on_times(repeat)
+
+                if self.miniservo_pre_time > pre_time:
+                    off_start, off_end = on_start-pre_time, on_start
+                else:
+                    off_start, off_end = on_start-self.miniservo_pre_time, on_start
+
+                off_frames = (self.frames_time > off_start) & (self.frames_time < off_end)
+
+                off_responses.append(np.mean(self.response[idx, off_frames]))
+
+            off_responses = np.array(off_responses)
+            baseline_mean[idx] = np.mean(off_responses)
+            baseline_std[idx] = np.std(off_responses)
+
+        return baseline_mean, baseline_std
+
+
     def get_on_trace(self, idx, repeat):
 
         on_start, on_end = self.get_on_times(repeat)
@@ -376,7 +406,7 @@ class LinearDevice:
         else:
             return all_traces
 
-    def analyze_cell_responsiveness(self, cell, distance=None):
+    def analyze_cell_responsiveness(self, cell, distance=None, monocular=None, threshold=1):
         """
         Analyzes if a cell is responsive to stimuli under a specific condition.
         
@@ -390,10 +420,23 @@ class LinearDevice:
         """
         
         # Determine which trials to use based on condition
-        if distance is None:
+        if distance is None and monocular is None:
             repeat_indices = np.arange(len(self.trial_sequence))
         else:
-            repeat_indices = np.where(self.trial_sequence == distance)[0]
+            # Filter by distance if specified
+            if distance is None:
+                distance_indices = np.arange(len(self.trial_sequence))
+            else:
+                distance_indices = np.where(self.trial_sequence == distance)[0]
+            
+            # Filter by monocular if specified
+            if monocular is None:
+                monocular_indices = np.arange(len(self.trial_sequence))
+            else:
+                monocular_indices = np.where(self.monocular_sequence == monocular)[0]
+            
+            # Get intersection of both conditions
+            repeat_indices = np.intersect1d(distance_indices, monocular_indices)
         
         # Calculate medians for this condition
         on_max = []
@@ -402,7 +445,7 @@ class LinearDevice:
         idx = np.where(self.suite2p_id == cell)[0][0]
 
         # get the mean trace for this cell
-        mean_trace = self.get_all_traces(cell, distance=distance, mean_trace=True)[0]
+        mean_trace = self.get_all_traces(cell, distance=distance, mean_trace=True, monocular=monocular)[0]
         max_pos = np.argmax(mean_trace)
 
         for repeat in repeat_indices:
@@ -419,17 +462,118 @@ class LinearDevice:
             on_trace = self.response[idx, on_frames]
             off_trace = self.response[idx, off_frames]
 
-            on_max.append(on_trace[max_pos])
+            # Take mean of a 5-frame window centered around max_pos
+            window_start = max(0, max_pos - 5)
+            window_end = min(len(on_trace), max_pos + 5)  # +3 because end is exclusive
+            on_max.append(np.mean(on_trace[window_start:window_end]))
             off_max.append(np.mean(off_trace))
         
         # Perform t-test
         t_stat, p_val = ttest_ind(on_max, off_max)
         
         # Determine if cell is responsive (p < 0.05 and median ON > median OFF)
-        is_responsive = (p_val < 0.05) and (np.median(on_max) > np.median(off_max))
-        # is_responsive = (np.median(on_max) > np.median(off_max)) and (np.median(on_max) > 0.5)
+        # Ensure max_pos isn't the last index to avoid window issues
+        is_responsive = (p_val < 0.05) and (np.median(on_max)>np.median(off_max)) and (np.percentile(on_max, 75) > threshold) and (max_pos < len(on_trace) - 1) and (max_pos > 0)
+        
         
         return is_responsive, p_val, on_max, off_max
+    
+    def analyze_population_stats(self):
+
+        # Initialize empty lists to collect data for each cell
+        cell_data = []
+        
+        # Analyze each cell
+        for cell in self.suite2p_id:
+            # Analyze monocular condition
+            is_responsive_monocular = self.analyze_cell_responsiveness(cell, monocular=True)[0]
+            
+            # Analyze binocular condition
+            is_responsive_binocular = self.analyze_cell_responsiveness(cell, monocular=False)[0]
+            
+            # Get distance modulation analysis results
+            p_value_monocular, pref_monocular, mod_strength_monocular, _ = self.analyze_cell_modulation(cell, monocular=True)
+            p_value_binocular, pref_binocular, mod_strength_binocular, _ = self.analyze_cell_modulation(cell, monocular=False)
+
+            # Create a row for this cell
+            cell_row = {
+                'cell_id': cell,
+                'mono_responsive': np.bool(is_responsive_monocular),
+                'mono_modulated': np.bool(p_value_monocular < 0.05 and is_responsive_monocular),
+                'mono_modulated_p': p_value_monocular,
+                'mono_pref': pref_monocular if p_value_monocular < 0.05 and is_responsive_monocular else np.nan,
+                'mono_strength': mod_strength_monocular if p_value_monocular < 0.05 and is_responsive_monocular else np.nan,
+                'bino_responsive': np.bool(is_responsive_binocular),
+                'bino_modulated': np.bool(p_value_binocular < 0.05 and is_responsive_binocular),
+                'bino_modulated_p': p_value_binocular,
+                'bino_pref': pref_binocular if p_value_binocular < 0.05 and is_responsive_binocular else np.nan,
+                'bino_strength': mod_strength_binocular if p_value_binocular < 0.05 and is_responsive_binocular else np.nan,
+            }
+            
+            cell_data.append(cell_row)
+        
+        # Create DataFrame from collected data
+        stats_df = pd.DataFrame(cell_data)
+        
+        # Calculate summary statistics
+        n_cells = len(stats_df)
+        n_responsive_either = stats_df['mono_responsive'].sum() + stats_df['bino_responsive'].sum() - \
+                             (stats_df['mono_responsive'] & stats_df['bino_responsive']).sum()
+        
+        n_both_modulated = (stats_df['mono_modulated'] & stats_df['bino_modulated']).sum()
+        n_mono_modulated = (stats_df['mono_modulated'] & ~stats_df['bino_modulated']).sum()
+        n_bino_modulated = (~stats_df['mono_modulated'] & stats_df['bino_modulated']).sum()
+        
+        # Print summary statistics
+        print(f"Total cells: {n_cells}")
+        print(f"Responsive cells (either condition): {n_responsive_either} ({n_responsive_either / n_cells * 100:.1f}%)")
+        
+        if n_responsive_either > 0:
+            print(f"Monocular modulated cells: {n_mono_modulated} ({n_mono_modulated / n_responsive_either * 100:.1f}% of responsive, {n_mono_modulated / n_cells * 100:.1f}% of total)")
+            print(f"Binocular modulated cells: {n_bino_modulated} ({n_bino_modulated / n_responsive_either * 100:.1f}% of responsive, {n_bino_modulated / n_cells * 100:.1f}% of total)")
+            print(f"Both modulated cells: {n_both_modulated} ({n_both_modulated / n_responsive_either * 100:.1f}% of responsive, {n_both_modulated / n_cells * 100:.1f}% of total)")
+        else:
+            print("Monocular modulated cells: 0 (0%)")
+            print("Binocular modulated cells: 0 (0%)")
+            print("Both modulated cells: 0 (0%)")
+        
+        
+        return stats_df
+
+    def analyze_cell_modulation(self, cell, monocular=None):
+
+        window_size = 5
+        distances = np.unique(self.trial_sequence)
+
+        # get the mean trace for this cell
+        mean_trace = self.get_all_traces(cell, mean_trace=True, monocular=None)[0]
+
+        # find the receptive fied for this cell
+        rf_idx = np.argmax(mean_trace)
+
+        rf_values = []
+        for distance in distances:
+            on_traces = self.get_all_traces(cell,  
+                                     distance=distance,
+                                     monocular=monocular)
+            # Find the max value within window +5 -5 frames from rf_index
+            window_start = max(0, rf_idx - window_size)
+            window_end = min(on_traces.shape[1], rf_idx + window_size + 1)
+            on_traces_max = np.max(on_traces[:, window_start:window_end], axis=1)
+            rf_values.append(on_traces_max)
+
+        f_stat, p_value = f_oneway(*rf_values)
+
+        # preffered distance is the one with the highest mean response
+        preferred_distance = np.argmax(np.mean(rf_values, axis=1))
+        least_preferred_distance = np.argmin(np.mean(rf_values, axis=1))
+
+        # modulation strength is how much higher the response is at the preferred distance compared to the least preferred distance
+        preferred_mean = np.mean(rf_values[preferred_distance])
+        least_preferred_mean = np.mean(rf_values[least_preferred_distance])
+        modulation_strength = (preferred_mean - least_preferred_mean) / (preferred_mean + least_preferred_mean)  # Avoid division by zero
+
+        return p_value, preferred_distance, modulation_strength, rf_values
 
 class LinearPlots:
 
@@ -488,10 +632,6 @@ class LinearPlots:
             else:
                 plt.axvspan(on_start/1000, on_end/1000, color=colors[self.L.trial_sequence[rep]], alpha=0.5, hatch='///')
 
-
-            # patch for servo down
-            plt.axvspan(on_end/1000, on_end/1000+self.L.servo_movement_time/1000, color='orange', alpha=0.4)
-
             # path for off_time    
             plt.axvspan(on_start/1000-self.L.miniservo_pre_time/1000, on_start/1000, color='gray', alpha=0.4)
 
@@ -514,7 +654,6 @@ class LinearPlots:
         # Only create one legend and keep it
         legend_elements.append(plt.Rectangle((0,0), 1, 1, fc='gray', label='Off Time'))
         legend_elements.append(plt.Rectangle((0,0), 1, 1, fc='orange', label='Servo Up'))
-        legend_elements.append(plt.Rectangle((0,0), 1, 1, fc='red', label='Servo Down'))
         ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5))
             
         
@@ -528,7 +667,7 @@ class LinearPlots:
 
         plt.tight_layout()
 
-    def plot_all_traces_colormap(self, cell, pre_time=1500, post_time=1500, distance=None):
+    def plot_all_traces_colormap(self, cell, pre_time=2500, post_time=1000, distance=None, monocular=None):
         """
         Create a colormap visualization of neural traces for a given cell.
         
@@ -553,8 +692,6 @@ class LinearPlots:
         # first column pcolormesh of all traces
         # second column plot of mean traces
         idx = np.where(self.L.suite2p_id == cell)[0][0]
-
-
         # Handle the case of a single distance (1D array of axes)
         if distance == None:
             fig, axs = plt.subplots(1, 3, figsize=(14, 4), 
@@ -572,9 +709,17 @@ class LinearPlots:
         for i, dist in enumerate(distance):
 
             if dist is None:
-                repeat_indices = np.arange(len(self.L.trial_sequence))
+                distance_indices = np.arange(len(self.L.trial_sequence))
             else:
-                repeat_indices = np.where(self.L.trial_sequence == dist)[0]
+                distance_indices = np.where(self.L.trial_sequence == dist)[0]
+
+            # find the indices of repeats that match the criteria
+            if monocular is not None:
+                monocular_indices = np.where(self.L.monocular_sequence == monocular)[0]
+            else:
+                monocular_indices = np.arange(len(self.L.trial_sequence))
+
+            repeat_indices = np.intersect1d(distance_indices, monocular_indices)
 
             repeat_traces = []
 
@@ -597,12 +742,12 @@ class LinearPlots:
             
             # Plot heatmap
             if self.L.response_mode == 'spikes-zscore' or self.L.response_mode == 'spikes':
-                cmap = 'Greys'
+                cmap = 'viridis'
             elif self.L.response_mode == 'dFF' or self.L.response_mode == 'dFF-zscore':
                 cmap = 'viridis'
 
             axs[i, 0].pcolormesh(repeat_traces, cmap=cmap, vmin=vmin, vmax=vmax)
-            axs[i, 0].axvline(x=(pre_time-self.L.miniservo_pre_time)/100, color='lightgray', linestyle='--', linewidth=1.5)
+            axs[i, 0].axvline(x=pre_time/100-self.L.miniservo_pre_time/100-self.L.servo_movement_time/100, color='lightgray', linestyle='--', linewidth=1.5)
             axs[i, 0].axvline(x=(pre_time/100), color='lightgray', linestyle='--', linewidth=1.5)
             axs[i, 0].axvline(x=(pre_time/100+self.L.on_length), color='lightgray', linestyle='--', linewidth=1.5)
             axs[i, 0].set_xlabel('Time (frames)')
@@ -627,18 +772,20 @@ class LinearPlots:
             
             # Analyze cell responsiveness and plot boxplot as third column
             if distance[0] is None:
-                is_responsive, p_val, on_max, off_max = self.L.analyze_cell_responsiveness(cell, distance=None)
+                is_responsive, p_val, on_max, off_max = self.L.analyze_cell_responsiveness(cell, distance=None, monocular=monocular)
             else:
-                is_responsive, p_val, on_max, off_max = self.L.analyze_cell_responsiveness(cell, distance=dist)
-            
-            # Plot boxplot of on and off
-            axs[i, 2].boxplot([on_max, off_max], patch_artist=False, showfliers=False)
+                is_responsive, p_val, on_max, off_max = self.L.analyze_cell_responsiveness(cell, distance=dist, monocular=monocular)
             
             # Add scatter points to each column
             for j, data in enumerate([on_max, off_max], 1):
                 # Add jitter to x positions for better visibility
                 x = np.random.normal(j, 0.05, size=len(data))
-                axs[i, 2].scatter(x, data, alpha=0.6, s=30, color='black', zorder=3)
+                axs[i, 2].scatter(x, data, alpha=0.2, s=30, color='black', zorder=3)
+
+            axs[i, 2].axhline(y=np.mean(on_max), color='black', linestyle='--', linewidth=1.5, alpha=0.5)
+
+            # Plot boxplot of on and off
+            axs[i, 2].boxplot([on_max, off_max], patch_artist=False, showfliers=False)
             
             axs[i, 2].set_xticks([1, 2])
             axs[i, 2].set_xticklabels(['ON', 'OFF'])
@@ -647,7 +794,7 @@ class LinearPlots:
             
             # Add a horizontal line between the boxplots
             axs[i, 2].plot([1, 2], [vmax * 0.95, vmax * 0.95], color='black', linewidth=1.5)
-            axs[i, 2].axhline(y=0.25, color='black', linestyle='--', linewidth=1.5)
+            
             
             # Add significance indicators
             if not is_responsive:
@@ -667,3 +814,102 @@ class LinearPlots:
 
         return fig
 
+    def plot_distance_and_rf_comparison(self, cell, conditions=None):
+        """
+        Plot distance traces and RF values across distances for all conditions.
+        
+        Parameters:
+        -----------
+        cell : int
+            The cell ID to analyze.
+        
+        Returns:
+        --------
+        fig : matplotlib.figure.Figure
+            The figure object.
+        """
+
+        idx = np.where(self.L.suite2p_id == cell)[0][0]
+
+        if conditions is None:
+            conditions = [
+                {'history': False, 'monocular': True, 'title': 'No History (Monocular)'},
+                {'history': False, 'monocular': False, 'title': 'No History (Binocular)'},
+            ]
+        
+        # Create figure with 2 rows, 4 columns
+        fig = plt.figure(figsize=(12, 8))
+        gs = fig.add_gridspec(2, 2)
+        axes_top = [fig.add_subplot(gs[0, i]) for i in range(2)]
+        axes_bottom = [fig.add_subplot(gs[1, i]) for i in range(2)]
+        
+        plt.suptitle(f'Cell {cell}', fontsize=24)
+        
+        colors = setup_plot_style()
+        distances = [0, 1, 2, 3]
+        
+        # Calculate global min/max for top row
+        vmin_top = np.percentile(self.L.response[idx], 1)
+        vmax_top = np.percentile(self.L.response[idx], 99)
+
+        vmin_bottom = np.min(self.L.response[idx])
+        vmax_bottom = np.max(self.L.response[idx])
+
+        # Plot both rows
+        for j, condition in enumerate(conditions):
+            # Top row - distance traces
+            ax_top = axes_top[j]
+            for i, distance in enumerate(distances):
+                mean_trace, sem_trace = self.L.get_all_traces(cell, distance=distance,
+                                                    monocular=condition['monocular'],
+                                                    mean_trace=True)
+                
+                ax_top.plot(mean_trace.T, color=colors[i], linewidth=2, label=f'Distance {distance}')
+                ax_top.fill_between(range(len(mean_trace)), 
+                                mean_trace - sem_trace,
+                                mean_trace + sem_trace,
+                                color=colors[i], alpha=0.2)
+            
+            ax_top.set_xlabel('Time (frames)')
+            ax_top.set_ylabel(self.L.response_mode)
+            ax_top.set_title(condition['title'])
+            ax_top.legend()
+            ax_top.set_ylim(vmin_top, vmax_top)
+
+            # Bottom row - RF values
+            ax_bottom = axes_bottom[j]
+            ax_bottom.set_ylim(vmin_bottom, vmax_bottom)
+
+            p_value, _, _, rf_values = self.L.analyze_cell_modulation(cell, monocular=condition['monocular'])
+
+            bp = ax_bottom.boxplot(rf_values, patch_artist=True, labels=distances)
+            
+            for element in ['boxes', 'whiskers', 'caps', 'medians']:
+                for item in bp[element]:
+                    item.set_color('black')
+                    item.set_linewidth(1)
+            for box in bp['boxes']:
+                box.set_facecolor('none')
+
+            for i, rf_vals in enumerate(rf_values):
+                x = np.random.normal(i+1, 0.04, size=len(rf_vals))
+                ax_bottom.scatter(x, rf_vals, alpha=0.8, color=colors[i], s=40)
+
+            # indicate rf_idx with a vertical line
+            # get the mean trace for this cell
+            rf_idx = np.argmax(self.L.get_all_traces(cell, mean_trace=True, monocular=None)[0])
+            ax_top.axvline(x=rf_idx, color='grey', linestyle='--', linewidth=1.5)
+
+            # # Check if p_value is significant and if the cell is responsive for the monocular condition
+            if p_value < 0.05 and self.L.analyze_cell_responsiveness(cell, monocular=condition['monocular'])[0]:
+                bar_height = vmax_bottom * 0.95
+                ax_bottom.plot([1, len(distances)], [bar_height, bar_height], 'k-', linewidth=1.5)
+                ax_bottom.text((1 + len(distances))/2, bar_height*1.02, '*', ha='center', va='bottom')
+
+            ax_bottom.set_title(f'p={p_value:.3f}')
+            ax_bottom.set_xlabel('Distance')
+            ax_bottom.set_ylabel(self.L.response_mode)
+            
+
+        plt.tight_layout()
+        return fig

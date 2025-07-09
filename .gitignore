@@ -10,3 +10,5 @@ linear-notebooks/distance_comparison_plots/cell_213_distance_comparison.png
 /src/__pycache__
 /.venv
 /.venv
+*.mp4
+*.avi

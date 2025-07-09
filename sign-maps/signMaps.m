@@ -1,9 +1,11 @@
 % reference =  reference_3;
-
-% load('SAM017_231016_additional_maps.mat');
+load('snap.mat')
+load('maps.mat');
+load('alt.mat')
+load('azi.mat')
 reference = snap;
 reference = imresize(reference, size(maps.VFS_processed));
-maps.HorizontalRetinotopy = maps.HorizontalRetinotopy + 45;
+maps.HorizontalRetinotopy = maps.HorizontalRetinotopy;
 
 %%
 field_of_view_vertical = maps.VerticalRetinotopy > -5 & maps.VerticalRetinotopy < 5;
@@ -43,7 +45,7 @@ title('VFS', fontsize = 16)
 %% Plot Vertical
 figure(2);
 ax1 = axes; 
-im = imagesc(ax1, snap); 
+im = imagesc(ax1, reference); 
 im.AlphaData = 1; % change this value to change the background image transparency 
 axis square; 
 hold all; 
@@ -63,15 +65,14 @@ ax1.XTick = [];
 ax1.YTick = []; 
 %add differenct colormap to different data if you wish 
 colormap(ax1,'gray') 
-colormap(ax2,'jet') 
-clim([-60, 60])
+colormap(ax2,'jet');
 colorbar
 %set the axes and colorbar position 
 set([ax1,ax2],'Position',[.17 .11 .685 .815]); 
 %% Plot Horizontal
 figure(3);
 ax1 = axes; 
-im = imagesc(ax1, snap); 
+im = imagesc(ax1, reference); 
 im.AlphaData = 1; % change this value to change the background image transparency 
 axis square; 
 hold all; 

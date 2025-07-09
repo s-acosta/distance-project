@@ -33,7 +33,7 @@ from suite2p.extraction import dcnv
 
 class ActivityLoader:
 
-    def __init__(self, activity_path, tau=None):
+    def __init__(self, activity_path, tau=None, skew_filter=False):
         """
         activity_path: path to the activity data
         tau: timescale of indicator
@@ -48,9 +48,14 @@ class ActivityLoader:
         self.frames_time = []
         self.is_cell = []
         self.suite2p_id = []
-        
 
+        if skew_filter:
+            self.filter_by_skewness(skew_filter)
+        else:
+            self.is_cell = np.load(self.path + '/suite2p/plane0/iscell.npy')
+        
         self.import_timing_data()
+
         self.import_activity_data()
 
         if tau is not None:
@@ -59,7 +64,6 @@ class ActivityLoader:
 
     def import_activity_data(self):
 
-        self.is_cell = np.load(self.path + '/suite2p/plane0/iscell.npy')
         self.suite2p_id = np.arange(len(self.is_cell[:, 0]))[self.is_cell[:, 0].astype(bool)]
         self.spikes = np.load(self.path + '/suite2p/plane0/spks.npy')
         self.f_neu = np.load(self.path + '/suite2p/plane0/Fneu.npy')
@@ -90,6 +94,28 @@ class ActivityLoader:
             np.save(self.path + '/suite2p/plane0/frames_time.npy', self.frames_time)
         else:
             print('No timing data imported')
+
+
+    def filter_by_skewness(self, skewness_threshold=0.75):
+        """
+        Filter cells by skewness of the dFF trace
+        """
+        stat = np.load(self.path + '/suite2p/plane0/stat.npy', allow_pickle=True)
+        self.is_cell = np.load(self.path + '/suite2p/plane0/iscell.npy')
+
+        # save the original is_cell
+        original_is_cell = self.is_cell.copy()
+        np.save(self.path + '/suite2p/plane0/original_iscell.npy', original_is_cell)
+        initial_cell_count = np.sum(self.is_cell[:, 0].astype(bool))
+
+        for cell in range(len(stat)):
+            skew = stat[cell]['skew']
+            if skew < skewness_threshold:
+                self.is_cell[cell] = False
+        
+        final_cell_count = np.sum(self.is_cell[:, 0].astype(bool))
+        print(f'Skewness filtering: {final_cell_count} cells accepted out of {initial_cell_count} total cells')
+        np.save(self.path + '/suite2p/plane0/iscell.npy', self.is_cell)
 
     def compute_dFF(self):
         print('Computing dFF')

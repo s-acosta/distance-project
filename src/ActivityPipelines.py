@@ -76,7 +76,8 @@ class ActivityLoader:
         if os.path.isfile(self.path + '/suite2p/plane0/dFF.npy'):
             self.dFF = np.load(self.path + '/suite2p/plane0/dFF.npy')
         else:
-            self.compute_dFF()
+            # self.compute_dFF()
+            self.dFF = self.spikes
 
 
     def import_timing_data(self):

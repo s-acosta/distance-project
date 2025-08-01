@@ -425,6 +425,8 @@ class RadialDevice:
         for cell in self.suite2p_id:
 
             print(f'Analyzing cell {cell} of {self.suite2p_id[-1]}', end='\r', flush=True)
+
+            rf = self.find_rf_position(cell, distance=None, monocular=None)
             
             # Analyze condition
             is_responsive = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)[0]
@@ -439,6 +441,7 @@ class RadialDevice:
             cell_row = {
                 'cell_id': cell,
                 'is_responsive': is_responsive,
+                'rf': rf,
                 'monocular_modulated': np.bool(p_value_monocular < 0.05),
                 'monocular_modulated_p': p_value_monocular,
                 'monocular_strength': mod_strength_monocular,
@@ -470,8 +473,6 @@ class RadialDevice:
         
         return stats_df
 
-
-    
 class RadialPlots:
 
     def __init__(self, radial_class):
@@ -935,11 +936,12 @@ class RadialPlots:
     
 class RadialSummaries():
 
-    def __init__(self, radial_class, radial_stats):
+    def __init__(self, radial_class, radial_stats, radial_plots):
         self.R = radial_class
         self.radial_stats = radial_stats
         self.session_name = self.R.session_path.split('/')[-2]
         self.colors = setup_plot_style()
+        self.radial_plots = radial_plots
 
         self.responsive_cells = self.find_responsive_cells()
         self.modulated_cells = self.find_modulated_cells()
@@ -986,32 +988,36 @@ class RadialSummaries():
         
         return modulated_cells
     
+    def plot_single_cells(self):
+
+        results_dir = os.path.join(self.R.session_path, 'results')
+
+        for condition in self.modulated_cells.keys():
+            print(f'Plotting {condition} cells')
+            figure_directory = create_new_result_dir(results_dir, f'{condition}')
+            for cell in self.modulated_cells[condition]:
+                print(f'Plotting cell {cell}', end='\r', flush=True)
+                fig = self.radial_plots.plot_all_traces_colormap_distances(cell=cell, method='regression')
+                fig.savefig(os.path.join(figure_directory, f'{cell}.png'))
+                plt.close(fig)
 
     def pullout_stat(self, cell_id, condition, stat_type):
 
-        if condition == 'binocular':
-            stat = self.radial_stats[1]
-        elif condition == 'monocular':
-            stat = self.radial_stats[0]
-        elif condition == 'none':
-            stat = self.radial_stats[1]
-        
         if stat_type == 'pref_angle':
-            return stat.loc[stat['cell_id'] == cell_id, 'rf_position'].values[0]
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_rf'].values[0]
         elif stat_type == 'pref_distance':
-            return stat.loc[stat['cell_id'] == cell_id, 'pref_distance'].values[0]
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_distance'].values[0]
         elif stat_type == 'mod_strength':
-            return stat.loc[stat['cell_id'] == cell_id, 'mod_strength'].values[0]
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_strength'].values[0]
         elif stat_type == 'modulated':
-            return stat.loc[stat['cell_id'] == cell_id, 'modulated'].values[0]
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_modulated'].values[0]
         elif stat_type == 'modulated_p':
-            return stat.loc[stat['cell_id'] == cell_id, 'modulated_p'].values[0]
-        elif stat_type == 'is_reliable':
-            return stat.loc[stat['cell_id'] == cell_id, 'is_reliable'].values[0]
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_modulated_p'].values[0]
+        elif stat_type == 'is_responsive':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, 'is_responsive'].values[0]
         else:
             raise ValueError(f"Stat type {stat_type} not found")
         
-    
     def plot_responsive_bars(self):
 
         # Create and configure bar chart
@@ -1388,7 +1394,7 @@ class RadialSummaries():
                 sc = ax.scatter(
                     xpix, ypix,
                     c='lightgray',
-                    s=100, alpha=0.8,
+                    s=150, alpha=0.8,
                     edgecolor='black', linewidth=1
                 )
             else:
@@ -1399,7 +1405,7 @@ class RadialSummaries():
                     cmap='viridis',
                     vmin=-30,
                     vmax=75,
-                    s=100, alpha=1,
+                    s=150, alpha=1,
                     edgecolor='black', linewidth=1
                 )
 
@@ -1415,7 +1421,6 @@ class RadialSummaries():
 
         return fig
     
-
     def plot_rf_density_map(self, bins = 20):
         """
         Plot a 2D map where each spatial bin is colored by the average RF location
@@ -1437,7 +1442,7 @@ class RadialSummaries():
             
             ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
             xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
-            rf = self.R.find_rf_position(cell_id, distance=None, monocular=None)
+            rf = self.pullout_stat(cell_id=cell_id, condition='binocular', stat_type='pref_angle')
             
             xs.append(xpix)
             ys.append(ypix)
@@ -1548,7 +1553,7 @@ class RadialSummaries():
             ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
             xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
 
-            pref_distance = self.radial_stats[idx_condition].loc[self.radial_stats[idx_condition]['cell_id'] == cell_id, 'pref_distance'].values[0]
+            pref_distance = self.pullout_stat(cell_id=cell_id, condition=condition, stat_type='pref_distance')
 
             ax.scatter(
                 xpix, ypix,
@@ -1562,8 +1567,6 @@ class RadialSummaries():
         plt.tight_layout(pad=0)
 
         return fig
-        
-        
     
     def plot_location_map(self, condition):
 
@@ -1604,6 +1607,21 @@ class RadialSummaries():
 
         return fig
 
+class MultiSession:
 
+    def __init__(self, session_names):
+        self.session_names = session_names
 
+        for session_name in session_names:
 
+    
+    def get_suite2p_dir(self, session_name):
+        return r'D:/data-distance-coding-project/processed-data/{session_name}/suite2p'.format(session_name=session_name)
+    
+    def get_field_coordinates(self, session_name):
+        return np.load(self.get_suite2p_dir(session_name) + r'\field_coordinates.npy')
+    
+    def get_mean_img(self, session_name):
+        return np.load(self.get_suite2p_dir(session_name) + r'\meanImg.npy')
+    
+        

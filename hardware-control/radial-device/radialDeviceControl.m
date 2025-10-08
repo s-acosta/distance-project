@@ -5,7 +5,7 @@ arguments
     encoder_port
     motor_port
     options.n_repeats = 2;
-    options.distances = [1, 2, 3, 4];
+    options.distances = [1, 2, 3, 4, 5];
     options.off_time = 1;
     options.DAQ_flag = false;
     options.random_flag = true;
@@ -17,6 +17,9 @@ if nargin < 1 || isempty(motor_port)
     temp = inputdlg('Input COM port of arduino: ');
     motor_port = temp{:};
 end
+
+ANGLE_RANGE = [-30, 90];
+TRIAL_DURATION = 12;
 
 %% Initialize DAQ
 if options.DAQ_flag
@@ -60,14 +63,9 @@ else
     monocular_sequence = false(1, options.n_repeats * n_distances);
 end
 
-
-% distance_vec = repmat(options.distances, [1 options.n_repeats]);
-%
-% if options.random_flag
-%     distance_vec = distance_vec(randperm(length(distance_vec)));
-% end
-
 off_start = zeros(size(distance_vec));
+trial_start = zeros(size(distance_vec));
+trial_end = zeros(size(distance_vec));
 on_start = zeros(size(distance_vec));
 on_end = zeros(size(distance_vec));
 
@@ -88,10 +86,9 @@ while ~contains(motor.readline(), "Movement Done")
 end
 
 %% Waiting for user input to go ahead
-time_of_stimulus = options.n_repeats * n_distances * 11;
-frames_of_stimulus = time_of_stimulus * 10;
+time_of_stimulus = options.n_repeats * n_distances * TRIAL_DURATION;
 
-fprintf('Frames of stimulus: %i \n', frames_of_stimulus);
+fprintf('Time of stimulus: %.2f seconds \n', time_of_stimulus);
 fprintf('Time of stimulus: %.2f minutes \n', time_of_stimulus/60);
 fprintf('Make sure it looks good before starting... \n')
 
@@ -136,7 +133,6 @@ end
 for i = 1:length(distance_vec)
 
     fprintf('\tPresentation %d | Distance %d\n', i, distance_vec(i));
-    % pause 2 secs before trial
 
     off_start(i) = toc;
     fprintf('\t\tOff start: %0.04fs\n', off_start(i));
@@ -144,22 +140,27 @@ for i = 1:length(distance_vec)
         encoder = readStreamValues(encoder);
     end
 
-    on_start(i) = toc;
-    fprintf('\t\tOn start: %0.04fs\n', on_start(i));
+    trial_start(i) = toc;
+    fprintf('\t\tTrial start: %0.04fs\n', trial_start(i));
     order = strcat("<", num2str(distance_vec(i)), ">");
     motor.writeline(order);
+
+    while ~contains(motor.readline(), "Movement Begins")
+        encoder = readStreamValues(encoder);
+    end
+    on_start(i) = toc;
+    fprintf('\t\tOn start: %0.04fs\n', on_start(i));
+
     while ~contains(motor.readline(), "Movement Done")
         encoder = readStreamValues(encoder);
     end
     on_end(i) = toc;
     fprintf('\t\tOn end: %0.04fs\n', on_end(i));
 
-    while ~contains(motor.readline(), "Movement Done")
-        encoder = readStreamValues(encoder);
+    while toc < floor(off_start(i) + TRIAL_DURATION)
     end
 
-    while toc < floor(off_start(i) + 11)
-    end
+    trial_end(i) = toc;
 
 end
 configureCallback(encoder, "off")
@@ -169,14 +170,17 @@ if options.DAQ_flag
 end
 
 stim_data = options;
-stim_data.distance = distance_vec;
 
+stim_data.angle_range = ANGLE_RANGE;
+stim_data.distance_sequence = distance_vec;
 stim_data.off_start = off_start;
-stim_data.on_start = on_start;
-stim_data.on_end = on_end;
-stim_data.encoder_time = encoder.UserData.Time;
-stim_data.encoder_time = stim_data.encoder_time - stim_data.encoder_time(1);
-stim_data.encoder_angle = encoder.UserData.Angle;
+stim_data.trial_start_time = trial_start;
+stim_data.trial_end_time = trial_end;
+stim_data.on_start_time = on_start;
+stim_data.on_end_time = on_end;
+stim_data.time = encoder.UserData.Time;
+stim_data.time = stim_data.time - stim_data.time(1);
+stim_data.angle = encoder.UserData.Angle;
 stim_data.monocular_sequence = monocular_sequence;
 
 % if options.save_flag

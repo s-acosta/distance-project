@@ -100,6 +100,8 @@ void loop() {
             else{
               distanceUp = true;
               moving_start_time = millis();
+              Serial.print("<Movement Begins>");
+              Serial.print('\n');
             }
             }
         }
@@ -116,7 +118,7 @@ void loop() {
       last_ms = millis();
     }
 
-    if (abs(counter - 160) < 1) {
+    if (abs(counter - 200) < 1) {
       moving_end_time = millis();
       for (int i = 0; i < servo_num; i++) {
         servo[i].write(rest_pos[i]);

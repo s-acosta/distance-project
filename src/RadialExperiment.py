@@ -12,7 +12,7 @@ colors = setup_plot_style()
 from path_setup import setup_project_path
 from src.ActivityPipelines import ActivityLoader
 import pandas as pd
-from scipy.stats import f_oneway, ttest_ind
+from scipy.stats import f_oneway, ttest_ind, linregress, binned_statistic_2d
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
 import scipy.stats
@@ -65,15 +65,18 @@ class RadialDevice:
 
         self.angle = locals_dict['angle']
         self.time = locals_dict['time']
-        self.trial_sequence = locals_dict['trial_sequence']
+        self.angle_limits = [-30, 75]
+        self.distance_sequence = locals_dict['distance_sequence'] - 1 
         self.off_start_time = locals_dict['off_start']
         self.trial_start_time = locals_dict['trial_start_time']
         self.trial_end_time = locals_dict['trial_end_time']
+        self.on_start_time = locals_dict['on_start_time']
+        self.on_end_time = locals_dict['on_end_time']
 
         try:
             self.monocular_sequence = locals_dict['monocular_sequence']
         except:
-            self.monocular_sequence = np.zeros_like(self.trial_sequence)
+            self.monocular_sequence = np.zeros_like(self.distance_sequence)
         
     def _load_activity(self, tau=None):
 
@@ -100,7 +103,7 @@ class RadialDevice:
     def _set_on_length(self):
 
         on_frames_experiment = []
-        for repeat in range(len(self.trial_sequence)):
+        for repeat in range(len(self.distance_sequence)):
             on_start, on_end = self.get_on_times(repeat)
             on_frames = (self.frames_time > on_start) & (self.frames_time < on_end)
             on_frames_experiment.append(on_frames)
@@ -119,7 +122,7 @@ class RadialDevice:
         # set the on length to the shortest length
         self.on_length = min(frame_counts.keys())
         print(f'Set stimulus on length: {self.on_length}')
-        self.angle_range = np.linspace(-30, 60, self.on_length)
+        self.angle_range = np.linspace(self.angle_limits[0], self.angle_limits[-1], self.on_length)
 
     def get_on_times(self, repeat):
         """
@@ -138,8 +141,8 @@ class RadialDevice:
             - on_end: timestamp (ms) when the stimulus presentation ends, including any hold time
         """
 
-        on_start = 1000*self.trial_start_time[repeat] + 2500
-        on_end = 1000*self.trial_end_time[repeat]
+        on_start = 1000*self.on_start_time[repeat] 
+        on_end = 1000*self.on_end_time[repeat]
 
         return on_start, on_end
 
@@ -157,16 +160,19 @@ class RadialDevice:
         
     def get_condition_trials(self, monocular=None, distance=None):
 
+        control_indices = np.where(self.distance_sequence == 4)[0]
+
         # find the indices of repeats that match the criteria
         if monocular is not None:
             monocular_indices = np.where(self.monocular_sequence == monocular)[0]
         else:
-            monocular_indices = np.arange(len(self.trial_sequence))
+            monocular_indices = np.arange(len(self.distance_sequence))
 
         if distance is not None:
-            distance_indices = np.where(self.trial_sequence == distance)[0]
+            distance_indices = np.where(self.distance_sequence == distance)[0]
         else:
-            distance_indices = np.arange(len(self.trial_sequence))
+            distance_indices = np.arange(len(self.distance_sequence))
+            distance_indices = np.setdiff1d(distance_indices, control_indices)
 
         # do intersection
         repeat_indices = np.intersect1d(monocular_indices, distance_indices)
@@ -191,22 +197,37 @@ class RadialDevice:
             return np.mean(all_traces, axis=0), np.std(all_traces, axis=0)/np.sqrt(all_traces.shape[0])
         else:
             return all_traces
+        
+    def find_rf_position(self, cell, distance=None, monocular=None):
+        
+        mean_trace = self.get_all_traces(cell, distance=distance, monocular=monocular, mean_trace=True)[0]
 
-    def analyze_cell_reliability(self, cell, n_iterations=200, distance=None, monocular=None):
-        """
-        Analyzes the reliability of a cell's response by comparing split-half correlations.
+        # find the receptive field for this cell
+        rf_idx = np.argmax(mean_trace)
+        rf_position = self.angle_range[rf_idx]
+
+        return rf_position
         
-        Args:
-            cell: Cell ID to analyze
-            n_iterations: Number of iterations for reliability calculation
-            distance: Optional distance condition to filter trials
-            monocular: Optional monocular condition to filter trials
-            
-        Returns:
-            tuple: (is_reliable, reliability, corr_shifted, corr) where is_reliable indicates if the cell
-                   is considered reliable based on correlation analysis
-        """
+    def find_rf_values(self, cell, distance=None, monocular=None):
+
+        rf_position = self.find_rf_position(cell, distance=distance, monocular=monocular)
+        rf_idx = np.where(self.angle_range == rf_position)[0][0]
         
+        window_size = 3
+        # get the mean trace for this cell
+        
+        on_traces = self.get_all_traces(cell,  
+                                    distance=distance,
+                                    monocular=monocular,
+                                    )
+        window_start = max(0, rf_idx - window_size)
+        window_end = min(on_traces.shape[1], rf_idx + window_size + 1)
+        rf_values = np.mean(on_traces[:, window_start:window_end], axis=1)
+        
+        return rf_values
+    
+    def compute_reliability(self, cell, distance=None, monocular=None, n_iterations=100):
+
         # Get traces for the specified conditions
         repeat_indices = self.get_condition_trials(monocular=monocular, distance=distance)
         idx = np.where(self.suite2p_id == cell)[0][0]
@@ -257,121 +278,68 @@ class RadialDevice:
             second_half_shifted_mean = np.mean(second_half_shifted, axis=0)
             corr_shifted.append(scipy.stats.pearsonr(first_half_shifted_mean, second_half_shifted_mean)[0])
 
-        # Calculate reliability metrics
-        reliability = np.mean(corr)
-        is_reliable = reliability > np.percentile(corr_shifted, 99)
+        return corr, corr_shifted
 
-        return is_reliable, reliability, corr_shifted, corr
-    
-    def analyze_cell_responsiveness(self, cell, distance=None, monocular=None, history=None, threshold=1):
+
+    def analyze_cell_reliability(self, cell, n_iterations=100, distance=None, monocular=None):
         """
-        Analyzes if a cell is responsive to stimuli under a specific condition.
+        Analyzes the reliability of a cell's response by comparing split-half correlations.
         
         Args:
-            cell: Cell index to analyze
-            distance: Distance condition to analyze (None for all distances)
-            
+            cell: Cell ID to analyze
+            n_iterations: Number of iterations for reliability calculation
+            distance: Optional distance condition to filter trials
+            monocular: Optional monocular condition to filter trials
+            control: Use control trials condition to filter trials
         Returns:
-            tuple: (is_responsive, p_value, on_max, off_max) where is_responsive is True if the cell is 
-                   significantly more active during ON periods (p < 0.05 and ON median > OFF median)
+            tuple: (is_reliable, reliability, corr_shifted, corr) where is_reliable indicates if the cell
+                   is considered reliable based on correlation analysis
         """
-        
-        repeat_indices = self.get_condition_trials(monocular=monocular, distance=distance)
-        
-        # Calculate medians for this condition
-        on_max = []
-        off_max = []
 
-        idx = np.where(self.suite2p_id == cell)[0][0]
+        corr, corr_shifted = self.compute_reliability(cell, distance=distance, monocular=monocular, n_iterations=n_iterations)
+        visually_responsive = np.mean(corr) > np.percentile(corr_shifted, 99)
 
-        # get the mean trace for this cell
-        mean_trace = self.get_all_traces(cell, distance=distance, mean_trace=True, monocular=monocular)[0]
-        max_pos = np.argmax(mean_trace)
+        corr_control, corr_shifted_control = self.compute_reliability(cell, distance=4, monocular=monocular, n_iterations=n_iterations)
+        control_responsive = np.mean(corr_control) > np.percentile(corr_shifted_control, 99)
 
-        for repeat in repeat_indices:
-            on_start, on_end = self.get_on_times(repeat)
+        rf_values_distances = [np.mean(self.find_rf_values(cell, distance=distance, monocular=monocular)) for distance in [0, 1, 2, 3]]
+        rf_values_control = np.mean(self.find_rf_values(cell, distance=4, monocular=monocular))
 
-            on_frames = (self.frames_time > on_start) & (self.frames_time < on_end)   
-            off_frames = (self.frames_time > on_start) & (self.frames_time < on_end)
+        # make sure that rf_values_distances are higher than rf_values_control, at least for three distances
+        control_comparison = [rf_values_control > rf_values for rf_values in rf_values_distances]
+        control_higher = np.sum(control_comparison) > 1
 
-            on_trace = self.response[idx, on_frames]
-            off_trace = self.response[idx, off_frames]
+        is_reliable = visually_responsive and not (control_responsive or control_higher)
 
-            # Take mean of a 5-frame window centered around max_pos
-            window_start = max(0, max_pos - 5)
-            window_end = min(len(on_trace), max_pos + 5)
-            on_max.append(np.mean(on_trace[window_start:window_end]))
-            off_max.append(np.mean(off_trace))
-        
-        # Determine if cell is responsive (p < 0.05 and median ON > median OFF)
-        # Ensure max_pos isn't the first or last index to avoid window issues
-        if self.response_mode == 'spikes-zscore' or self.response_mode == 'spikes':
-            _, p_val = ttest_ind(on_max, off_max)
-            is_responsive = (p_val < 0.05) and (np.median(on_max)>np.median(off_max)) and (max_pos < len(on_trace) - 1) and (max_pos > 0)
-            return is_responsive, p_val, on_max, off_max
-        else:
-            is_reliable, reliability, _, _ = self.analyze_cell_reliability(cell, n_iterations=100, distance=None, monocular=monocular, history=history)
-            is_responsive = (max_pos > 0) and is_reliable and (np.median(on_max)>np.median(off_max))
-            return is_responsive, reliability, on_max, off_max
-
-    def fit_gaussian(self, cell, distance=None, monocular=None, history=None):
-
-        def gaussian(x, a, mu, sigma, baseline):
-            return a * np.exp(-((x - mu)**2) / (2 * sigma**2)) + baseline
-        
-        mean_trace = self.get_all_traces(cell, distance=distance, monocular=monocular, history=history, mean_trace=True)[0]
-        x = np.arange(len(mean_trace))
-
-        p0 = [np.max(mean_trace) - np.min(mean_trace), np.argmax(mean_trace), 5, np.min(mean_trace)]
-        
-        try:
-            popt, _ = curve_fit(gaussian, x, mean_trace, p0=p0)
-            a, mu, sigma, baseline = popt
-
-            # Calculate R-squared
-            y_fit = gaussian(x, a, mu, sigma, baseline)
-            residuals = mean_trace - y_fit
-            ss_res = np.sum(residuals**2)
-            ss_tot = np.sum((mean_trace - np.mean(mean_trace))**2)
-            r_squared = 1 - (ss_res / ss_tot)
-        except:
-            mu = np.nan
-            r_squared = 0
-        
-        return mu, r_squared
+        return is_reliable, visually_responsive, control_responsive, control_higher
     
-    def analyze_cell_modulation(self, cell, monocular=None):
+    def test_linear_trend_rf(self, cell, distances=[0, 1, 2, 3], monocular=None):
 
-        window_size = 3
+        rf_values = [self.find_rf_values(cell, distance=distance, monocular=monocular) for distance in distances]
 
-        distances = np.unique(self.trial_sequence)
-        # get the mean trace for this cell
-        mean_trace = self.get_all_traces(cell, mean_trace=True, monocular=monocular)[0]
+        # Combine into response vector y and predictor x
+        y = np.concatenate(rf_values)
+        x = np.repeat(distances, repeats=rf_values[0].size)
 
-        # find the receptive fied for this cell
-        rf_idx = np.argmax(mean_trace)
-        rf_position = self.angle_range[rf_idx]
+        # Simple linear regression via SciPy
+        result = linregress(x, y)
 
-        rf_values = []
-        for distance in distances:
-            on_traces = self.get_all_traces(cell,  
-                                     distance=distance,
-                                     monocular=monocular,
-                                     )
-            # Find the max value within window +5 -5 frames from rf_index
-            window_start = max(0, rf_idx - window_size)
-            window_end = min(on_traces.shape[1], rf_idx + window_size + 1)
-            on_traces_max = np.mean(on_traces[:, window_start:window_end], axis=1)
-            rf_values.append(on_traces_max)
+        return result.pvalue
+    
+    def analyze_cell_modulation(self, cell, monocular=None, method='ANOVA'):
 
-        f_stat, p_value = f_oneway(*rf_values)
-        # preffered distance is the one with the highest mean response
-        # Handle case where rf_values may have different lengths
-        means = np.array([np.mean(values) for values in rf_values])
+        rf_values = [self.find_rf_values(cell, distance=distance, monocular=monocular) for distance in [0, 1, 2, 3, 4]]
+        distances_rf = [rf_values[i] for i in range(len(rf_values)-1)]
+
+        if method == 'ANOVA':
+            # calculate the f_statistic and p_value
+            f_stat, p_value = f_oneway(*distances_rf)
+        elif method == 'regression':
+            p_value = self.test_linear_trend_rf(cell, distances=[0, 1, 2, 3], monocular=monocular)
         
         # Split trials into two halves for cross-validation
         half_rf_values = []
-        for values in rf_values:
+        for values in distances_rf:
             n_trials = len(values)
             # Create a random permutation of indices
             random_indices = np.random.permutation(n_trials)
@@ -393,9 +361,9 @@ class RadialDevice:
         # Calculate modulation strength using the second half data
         modulation_strength = (np.abs(preferred_mean) - np.abs(least_preferred_mean)) / (np.abs(preferred_mean) + np.abs(least_preferred_mean) + 1e-10)  # Avoid division by zero
 
-        return p_value, preferred_distance, modulation_strength, rf_values, rf_position
+        return p_value, preferred_distance, modulation_strength
     
-    def analyze_condition_stats(self, monocular=None):
+    def analyze_condition_stats(self, monocular=None, method='ANOVA'):
         
         # Define condition name based on monocular and history options
         if monocular is None:
@@ -410,16 +378,18 @@ class RadialDevice:
         
         # Analyze each cell
         for cell in self.suite2p_id:
+
+            print(f'Analyzing cell {cell} of {self.suite2p_id[-1]} for {condition_name} condition', end='\r', flush=True)
             
             # Analyze condition
-            is_reliable, reliability, _, _ = self.analyze_cell_reliability(cell, monocular=monocular)
-            p_value, pref_distance, mod_strength, _, rf_position = self.analyze_cell_modulation(cell, monocular=monocular)
+            is_reliable = self.analyze_cell_reliability(cell, monocular=monocular)[0]
+            p_value, pref_distance, mod_strength = self.analyze_cell_modulation(cell, monocular=monocular, method=method)
+            rf_position = self.find_rf_position(cell, distance=None, monocular=monocular)
             
             # Create a row for this cell
             cell_row = {
                 'cell_id': cell,
                 'is_reliable': is_reliable,
-                'reliable': reliability,
                 'modulated': np.bool(p_value < 0.05),
                 'modulated_p': p_value,
                 'mod_strength': mod_strength,
@@ -446,11 +416,68 @@ class RadialDevice:
         
         return stats_df
     
+    def analyze_session_stats(self, n_iterations=100, method='ANOVA'):
+
+        # Initialize empty lists to collect data for each cell
+        cell_data = []
+        
+        # Analyze each cell
+        for cell in self.suite2p_id:
+
+            print(f'Analyzing cell {cell} of {self.suite2p_id[-1]}', end='\r', flush=True)
+
+            rf = self.find_rf_position(cell, distance=None, monocular=None)
+            
+            # Analyze condition
+            is_responsive = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)[0]
+
+            p_value_monocular, pref_distance_monocular, mod_strength_monocular = self.analyze_cell_modulation(cell, monocular=True, method=method)
+            rf_position_monocular = self.find_rf_position(cell, distance=None, monocular=True)
+            
+            p_value_binocular, pref_distance_binocular, mod_strength_binocular = self.analyze_cell_modulation(cell, monocular=False, method=method)
+            rf_position_binocular = self.find_rf_position(cell, distance=None, monocular=False)
+            
+            # Create a row for this cell
+            cell_row = {
+                'cell_id': cell,
+                'is_responsive': is_responsive,
+                'rf': rf,
+                'monocular_modulated': np.bool(p_value_monocular < 0.05),
+                'monocular_modulated_p': p_value_monocular,
+                'monocular_strength': mod_strength_monocular,
+                'monocular_distance': pref_distance_monocular,
+                'monocular_rf': rf_position_monocular,
+                'binocular_modulated': np.bool(p_value_binocular < 0.05),
+                'binocular_modulated_p': p_value_binocular,
+                'binocular_strength': mod_strength_binocular,
+                'binocular_distance': pref_distance_binocular,
+                'binocular_rf': rf_position_binocular,
+            }
+            
+            cell_data.append(cell_row)
+        
+        # Create DataFrame from collected data
+        stats_df = pd.DataFrame(cell_data)
+        
+        # Calculate summary statistics
+        n_cells = len(stats_df)
+        n_responsive = stats_df['is_responsive'].sum()
+        n_monocular_modulated = stats_df['monocular_modulated'].sum()
+        n_binocular_modulated = stats_df['binocular_modulated'].sum()
+
+        # Print summary statistics
+        print(f"Total cells: {n_cells}")
+        print(f"Responsive cells: {n_responsive} ({n_responsive / n_cells * 100:.1f}%)")
+        print(f"Monocular modulated cells: {n_monocular_modulated} ({n_monocular_modulated / n_responsive * 100:.1f}%)")
+        print(f"Binocular modulated cells: {n_binocular_modulated} ({n_binocular_modulated / n_responsive * 100:.1f}%)")
+        
+        return stats_df
+
 class RadialPlots:
 
     def __init__(self, radial_class):
         self.R = radial_class
-        self.colors = ['orange', '#35b779', '#31688e', '#440154']
+        self.colors = ['orange', '#35b779', '#31688e', '#440154', 'grey']
         pass
 
     def plot_stimulus_response(self, repeats=10, cell = None):
@@ -499,9 +526,9 @@ class RadialPlots:
         for rep in repeats:
             on_start, on_end = self.R.get_on_times(rep)
             if self.R.monocular_sequence[rep] == 1:
-                plt.axvspan(on_start/1000, on_end/1000, color=colors[self.R.trial_sequence[rep]], alpha=0.5)
+                plt.axvspan(on_start/1000, on_end/1000, color=colors[self.R.distance_sequence[rep]], alpha=0.5)
             else:
-                plt.axvspan(on_start/1000, on_end/1000, color=colors[self.R.trial_sequence[rep]], alpha=0.5, hatch='///')
+                plt.axvspan(on_start/1000, on_end/1000, color=colors[self.R.distance_sequence[rep]], alpha=0.5, hatch='///')
 
         #if cell is not None, set the ylim to the 99 and 1 percentiles of the response
         if cell is not None:
@@ -637,9 +664,9 @@ class RadialPlots:
 
         return fig
     
-    def plot_all_traces_colormap_distances(self, cell):
+    def plot_all_traces_colormap_distances(self, cell, method='ANOVA'):
         """
-        Create a colormap visualization of neural traces for a given cell.
+        Create a colormap visualization of neural traces for a given cell, with an additional column for stats text.
         
         Parameters:
         -----------
@@ -662,11 +689,12 @@ class RadialPlots:
         idx = np.where(self.R.suite2p_id == cell)[0][0]
         
         # Define distances to plot
-        distance = [0, 1, 2, 3]
-        
-        # Create figure with a row for each condition, 2 columns per row
-        fig, axs = plt.subplots(2, 4, figsize=(15, 8), 
-                               gridspec_kw={'width_ratios': [1, 1, 1, 1]})
+        distances_with_control = [0, 1, 2, 3, 4]
+        distances_without_control = [0, 1, 2, 3]
+
+        # Create figure with a row for each condition, 5 columns per row (add one for stats text)
+        fig, axs = plt.subplots(2, 5, figsize=(18, 8), 
+                               gridspec_kw={'width_ratios': [1, 1, 1, 1, 1.2]})
         # remove axis ticks from second subplot
         axs[0, 1].remove()
         axs[1, 1].remove()
@@ -684,8 +712,7 @@ class RadialPlots:
             repeat_traces = []
             repeats_per_distance = []
             
-            for i, dist in enumerate(distance):
-               
+            for i, dist in enumerate(distances_with_control):
                 repeat_indices = self.R.get_condition_trials(
                     monocular=condition['monocular'], 
                     distance=dist
@@ -708,20 +735,7 @@ class RadialPlots:
                     color=self.colors[dist], alpha=0.2
                 )
 
-
-            # Add horizontal lines to mark different distances
-            for i, n_repeats in enumerate(repeats_per_distance):
-                if i > 0:
-                    y_pos = np.sum(repeats_per_distance[:i])
-                    axs[c_idx, 0].axhline(y=y_pos, color=self.colors[i-1], linestyle='--', linewidth=2)
-            
-            # Plot heatmap
-            if self.R.response_mode == 'spikes-zscore' or self.R.response_mode == 'spikes':
-                cmap = 'viridis'
-            elif self.R.response_mode == 'dFF' or self.R.response_mode == 'dFF-zscore':
-                cmap = 'viridis'
-
-            axs[c_idx, 0].pcolormesh(repeat_traces, cmap=cmap, vmin=vmin, vmax=vmax)
+            axs[c_idx, 0].pcolormesh(repeat_traces, cmap='viridis', vmin=vmin, vmax=vmax)
 
             axs[c_idx, 0].set_xlabel('Time (frames)')
             axs[c_idx, 0].set_ylabel('Trials')
@@ -730,10 +744,10 @@ class RadialPlots:
             # radial plot
             n_theta = len(self.R.angle_range)
             theta_edges = np.linspace(np.radians(self.R.angle_range[0]), np.radians(self.R.angle_range[-1]), n_theta + 1)
-            r_edges = np.linspace(0, len(distance), len(distance) + 1)
+            r_edges = np.linspace(0, len(distances_without_control), len(distances_without_control) + 1)
             theta_grid, r_grid = np.meshgrid(theta_edges, r_edges)
             
-            matrices = [self.R.get_all_traces(cell=cell, monocular=condition['monocular'], distance=dist, mean_trace=True)[0] for dist in distance]
+            matrices = [self.R.get_all_traces(cell=cell, monocular=condition['monocular'], distance=dist, mean_trace=True)[0] for dist in [0, 1, 2, 3]]
             Z = np.vstack(matrices)
 
             # # Make this axis polar
@@ -741,8 +755,8 @@ class RadialPlots:
             ax_polar = plt.subplot2grid(axs.shape, (c_idx, 1), projection='polar', fig=fig)
             ax_polar.set_theta_zero_location('N')
             ax_polar.set_theta_direction(-1)
-            ax_polar.set_thetamin(-30)
-            ax_polar.set_thetamax(60)
+            ax_polar.set_thetamin(self.R.angle_range[0])
+            ax_polar.set_thetamax(self.R.angle_range[-1])
             # Plot on the polar axis
             pcm = ax_polar.pcolormesh(theta_grid, r_grid, Z, shading='auto', cmap='viridis', vmin=vmin, vmax=vmax)
             
@@ -758,9 +772,11 @@ class RadialPlots:
             axs[c_idx, 2].set_ylim(vmin, vmax)
 
             # boxplot
-            p_value, _, _, rf_values, _ = self.R.analyze_cell_modulation(cell, monocular=condition['monocular'])
-
-            bp = axs[c_idx, 3].boxplot(rf_values, patch_artist=True, labels=distance, showfliers=False)
+            p_value, pref_distance, mod_strength = self.R.analyze_cell_modulation(cell, monocular=condition['monocular'], method=method)
+            rf_values = [self.R.find_rf_values(cell, distance=distance, monocular=condition['monocular']) for distance in distances_with_control]
+            rf_position = self.R.find_rf_position(cell, monocular=condition['monocular'])
+            
+            bp = axs[c_idx, 3].boxplot(rf_values, patch_artist=True, labels=distances_without_control + ['control'], showfliers=False)
             
             for element in ['boxes', 'whiskers', 'caps', 'medians']:
                 for item in bp[element]:
@@ -771,19 +787,37 @@ class RadialPlots:
 
             for i, rf_vals in enumerate(rf_values):
                 x = np.random.normal(i+1, 0.04, size=len(rf_vals))
-                axs[c_idx, 3].scatter(x, rf_vals, alpha=0.8, color=colors[i], s=40)
+                axs[c_idx, 3].scatter(x, rf_vals, alpha=0.8, color=self.colors[i], s=40)
 
             # # Check if p_value is significant and if the cell is responsive for the monocular condition
-            if p_value < 0.05 and self.R.analyze_cell_reliability(cell, monocular=condition['monocular'])[0]:
+            is_reliable,visually_responsive, control_responsive, control_higher = self.R.analyze_cell_reliability(cell, monocular=condition['monocular'])
+            if p_value < 0.05 and visually_responsive:
                 bar_height = vmax * 0.8
-                axs[c_idx, 3].plot([1, len(distance)], [bar_height, bar_height], 'k-', linewidth=1.5)
-                axs[c_idx, 3].text((1 + len(distance))/2, bar_height*1.02, '*', ha='center', va='bottom')
+                axs[c_idx, 3].plot([1, len(distances_with_control)], [bar_height, bar_height], 'k-', linewidth=1.5)
+                axs[c_idx, 3].text((1 + len(distances_with_control))/2, bar_height*1.02, '*', ha='center', va='bottom')
 
             axs[c_idx, 3].set_title(f'p={p_value:.3f}', fontsize=14)
             axs[c_idx, 3].set_xlabel('Distance')
             axs[c_idx, 3].set_ylabel(self.R.response_mode)
             axs[c_idx, 3].set_ylim(vmin, vmax)
 
+            # --- Stats text column ---
+            stats_lines = []
+            stats_lines.append(f"Reliable: {is_reliable}")
+            stats_lines.append(f"Visually reliable: {visually_responsive}")
+            stats_lines.append(f"Control reliable: {control_responsive}")
+            stats_lines.append(f"Control higher: {control_higher}")
+            stats_lines.append(f"Modulated: {p_value < 0.05}")
+            stats_lines.append(f"RF position: {rf_position:.2f}")
+            stats_lines.append(f"Modulation strength: {mod_strength:.3f}")
+            stats_lines.append(f"Preferred distance: {pref_distance}")
+            stats_lines.append(f"Mean RF values:")
+            for i, vals in enumerate(rf_values):
+                stats_lines.append(f"  D={distances_with_control[i]}: {np.mean(vals):.2f} ± {np.std(vals):.2f} (n={len(vals)})")
+
+            stats_text = "\n".join(stats_lines)
+            axs[c_idx, 4].axis('off')
+            axs[c_idx, 4].text(0, 1, stats_text, va='top', ha='left', fontsize=11, family='monospace')
 
         # Add suptitle to the figure
         fig.suptitle(f'Cell {cell}', fontsize=20)
@@ -902,78 +936,158 @@ class RadialPlots:
     
 class RadialSummaries():
 
-    def __init__(self, radial_class, radial_stats):
+    def __init__(self, radial_class, radial_stats, radial_plots):
         self.R = radial_class
         self.radial_stats = radial_stats
-        self.session_name = self.R.session_path.split('/')[-1]
+        self.session_name = self.R.session_path.split('/')[-2]
         self.colors = setup_plot_style()
+        self.radial_plots = radial_plots
 
-        self.responsive_cells, self.modulated_cells = self.find_modulated_cells()
-        self.non_modulated_cells = self.find_non_modulated_cells()
+        self.responsive_cells = self.find_responsive_cells()
+        self.modulated_cells = self.find_modulated_cells()
 
-    # def find_responsive_cells(self):
+    def find_responsive_cells(self):
 
-    #     # find the cells that are responsive in any condition
-    #     responsive_cells = []
-    #     for stat_df in self.linear_stats:
-    #         responsive_cells.append(stat_df[stat_df['responsive']==True]['cell_id'].values)
-    #     responsive_cells = np.concatenate(responsive_cells)
-    #     responsive_cells = np.unique(responsive_cells)
+        responsive_cells = self.radial_stats[self.radial_stats['is_responsive'] == True]['cell_id'].values
 
-    #     return responsive_cells
+        return responsive_cells
 
-    def find_non_modulated_cells(self):
-        non_modulated_cells = {}
-        for i, stat_df in enumerate(self.radial_stats):
-            condition_name = stat_df['condition'].iloc[0] if not stat_df.empty else f"condition_{i}"
-            # Get cells that are responsive but not modulated
-            non_modulated_cells[condition_name] = stat_df[(stat_df['reliable']==True) & (stat_df['modulated']==False)]['cell_id'].values
-
-        # Find cells that are non-modulated in all conditions
-        all_conditions = set.intersection(*[set(cells) for cells in non_modulated_cells.values()]) if non_modulated_cells else set()
-        non_modulated_cells = np.array(list(all_conditions))
-
-        return non_modulated_cells
-    
     def find_modulated_cells(self):
 
-        # find the cells that are modulated in any condition
-        modulated_cells = {}
-        responsive_cells = {}
+        def is_monocular_modulated(cell):
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell, 'monocular_modulated'].values[0]
+
+        def is_binocular_modulated(cell):
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell, 'binocular_modulated'].values[0]
+
+        modulated_cells = {'monocular': [], 'binocular': [], 'both': [], 'none': []}
+
+        for cell in self.responsive_cells:
+            if is_monocular_modulated(cell) and is_binocular_modulated(cell):
+                modulated_cells['both'].append(cell)
+            elif is_monocular_modulated(cell):
+                modulated_cells['monocular'].append(cell)
+            elif is_binocular_modulated(cell):
+                modulated_cells['binocular'].append(cell)
+            else:
+                modulated_cells['none'].append(cell)
+    
+        n_cells = len(self.R.suite2p_id)
+        n_responsive = len(self.responsive_cells)
+        n_monocular_modulated = len(modulated_cells.get('monocular', []))
+        n_binocular_modulated = len(modulated_cells.get('binocular', []))
+        n_both_modulated = len(modulated_cells.get('both', []))
+        n_non_modulated = len(modulated_cells.get('none', []))
+
+        print(f"Total cells: {n_cells}")
+        print(f"Responsive cells: {n_responsive} ({n_responsive / n_cells * 100:.1f}%)")
+        print(f"Monocular modulated cells: {n_monocular_modulated} ({n_monocular_modulated / n_responsive * 100:.1f}%)")
+        print(f"Binocular modulated cells: {n_binocular_modulated} ({n_binocular_modulated / n_responsive * 100:.1f}%)")
+        print(f"Both modulated cells: {n_both_modulated} ({n_both_modulated / n_responsive * 100:.1f}%)")
+        print(f"Non-modulated cells: {n_non_modulated} ({n_non_modulated / n_responsive * 100:.1f}%)")
+        
+        return modulated_cells
+    
+    def plot_single_cells(self):
+
+        results_dir = os.path.join(self.R.session_path, 'results')
+
+        for condition in self.modulated_cells.keys():
+            print(f'Plotting {condition} cells')
+            figure_directory = create_new_result_dir(results_dir, f'{condition}')
+            for cell in self.modulated_cells[condition]:
+                print(f'Plotting cell {cell}', end='\r', flush=True)
+                fig = self.radial_plots.plot_all_traces_colormap_distances(cell=cell, method='regression')
+                fig.savefig(os.path.join(figure_directory, f'{cell}.png'))
+                plt.close(fig)
+
+    def pullout_stat(self, cell_id, condition, stat_type):
+
+        if stat_type == 'pref_angle':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_rf'].values[0]
+        elif stat_type == 'pref_distance':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_distance'].values[0]
+        elif stat_type == 'mod_strength':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_strength'].values[0]
+        elif stat_type == 'modulated':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_modulated'].values[0]
+        elif stat_type == 'modulated_p':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_modulated_p'].values[0]
+        elif stat_type == 'is_responsive':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, 'is_responsive'].values[0]
+        else:
+            raise ValueError(f"Stat type {stat_type} not found")
+        
+    def plot_responsive_bars(self):
+
+        # Create and configure bar chart
+        fig, ax = plt.subplots(figsize=(8, 5))
+        bar_colors = ['coral', 'lightgreen', 'blue']
+
+        responsive_cells_set = {}
         for i, stat_df in enumerate(self.radial_stats):
             condition_name = stat_df['condition'].iloc[0] if not stat_df.empty else f"condition_{i}"
-            modulated_cells[condition_name] = stat_df[(stat_df['modulated']==True) & (stat_df['is_reliable']==True)]['cell_id'].values
-            responsive_cells[condition_name] = stat_df[stat_df['is_reliable']==True]['cell_id'].values
+            responsive_cells_set[condition_name] = set(stat_df[stat_df['is_reliable'] == True]['cell_id'].values)
 
-        # # Find cells that are modulated in all conditions
-        # all_conditions = set.intersection(*[set(cells) for cells in modulated_cells.values()]) if modulated_cells else set()
-        # modulated_cells['all_conditions'] = np.array(list(all_conditions))
+        total_cells = len(self.R.suite2p_id)
+        bar_width = 0.75
 
-        # # Find cells that are responsive in all conditions
-        # all_conditions = set.intersection(*[set(cells) for cells in responsive_cells.values()]) if responsive_cells else set()
-        # responsive_cells['all_conditions'] = np.array(list(all_conditions))
-              
-        # find the non-modulated, that is the responsive cells that are not in any categorymodulated cells
-        non_modulated = np.setdiff1d(responsive_cells['all_conditions'], 
-                                   np.concatenate([cells for cells in modulated_cells.values()]))
-        # modulated_cells['non_modulated'] = non_modulated
-        
-        return responsive_cells, modulated_cells
+        # Plot for each condition
+        for i, cond in enumerate(responsive_cells_set.keys()):
+            responsive_cells = responsive_cells_set[cond]
+            n_resp = len(responsive_cells)
+            percentage = (n_resp/total_cells)*100 
+
+            # Plot total cells as gray bar
+            ax.bar(cond, 100, color='lightgray', width=bar_width, label='Total Cells' if i == 0 else "")
+
+            # Plot responsive cells as colored bar
+            ax.bar(cond, percentage, color=bar_colors[i], width=bar_width)
+            # Show both percentage and absolute number
+            ax.text(cond, percentage, f'{percentage:.1f}%\n({n_resp}/{total_cells})', ha='center', va='bottom', fontsize=12)
+
+        # Plot for 'both' (intersection)
+        responsive_cells = self.find_responsive_cells()
+        n_resp_both = len(responsive_cells)
+        percentage = (n_resp_both/total_cells)*100
+
+        ax.bar('both', 100, color='lightgray', width=bar_width, label='Total Cells' if len(responsive_cells_set) == 0 else "")
+        ax.bar('both', percentage, color=bar_colors[2], alpha=0.5, width=bar_width)
+        ax.text('both', percentage, f'{percentage:.1f}%\n({n_resp_both}/{total_cells})', ha='center', va='bottom', fontsize=12)
+
+        # remove y axis altogether   
+        ax.set_yticklabels([])
+        ax.set_yticks([])
+
+        # remove spines
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+
+        # add title with less padding so they appear closer
+        fig.suptitle('Responsive Cells', fontsize=18, color='black', y=0.94)
+        ax.set_title(self.session_name, fontsize=14, color='grey', pad=2)
+
+        plt.tight_layout()
+
+        return fig
 
     def plot_modulation_bars(self):
         
         # Create and configure bar chart
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fig.suptitle(self.session_name, fontsize=16)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        
+        bar_colors = ['coral', 'lightgreen', 'blue']
 
-        labels = list(self.modulated_cells.keys())
-        responsive_counts = [len(self.responsive_cells[label]) for label in labels]
-        modulated_counts = [len(self.modulated_cells[label]) for label in labels]
+        labels = list(self.modulated_cells.keys()) 
+        responsive_cells = self.find_responsive_cells()
+        modulated_cells = self.find_modulated_cells()
+        responsive_counts = [len(responsive_cells)]*len(labels)
+        modulated_counts = [len(modulated_cells[label]) for label in labels]
         percentages = [mod/resp*100 for mod, resp in zip(modulated_counts, responsive_counts)]
 
         # Create stacked bar chart
-        bars = ax.bar(labels, responsive_counts, color='lightgray', label='Responsive')
-        modulated_bars = ax.bar(labels, modulated_counts, color='#4CAF50', label='Modulated')
+        bars = ax.bar(labels[:-1], responsive_counts[:-1], color='lightgray', label='Responsive', width=0.75)
+        modulated_bars = ax.bar(labels[:-1], modulated_counts[:-1], color=bar_colors, label='Modulated', width=0.75)
         
         # Add value labels on top of bars
         for bar, percentage, count, resp_count in zip(bars, percentages, modulated_counts, responsive_counts):
@@ -982,105 +1096,21 @@ class RadialSummaries():
                    f'{percentage:.1f}%\n({count}/{resp_count})',
                    ha='center', va='bottom', fontsize=12,
                    )
+            
+        # remove y axis
+        ax.set_yticklabels([])
+        ax.set_yticks([])
+        ax.spines['left'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
 
         # Customize the plot
-        ax.set_ylabel('Number of Cells', fontsize=14)
         ax.set_ylim(0, max(responsive_counts) * 1.2)  # Add 20% space for labels
-        plt.xticks(rotation=45, ha='right')
-        ax.legend()
+
+        # add title with less padding so they appear closer
+        fig.suptitle('Modulated Cells', fontsize=18, color='black', y=0.94)
+        ax.set_title(self.session_name, fontsize=14, color='grey', pad=2)
         
         plt.tight_layout()
-        plt.show()
-
-        return fig
-    
-    def plot_responsive_bars(self):
-
-        # Create and configure bar chart
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fig.suptitle(self.session_name, fontsize=16)
-
-        labels = list(self.modulated_cells.keys())
-        responsive_counts = [len(self.responsive_cells[label]) for label in labels]
-        total_counts = [len(self.R.suite2p_id) for label in labels]
-
-        # Create stacked bar chart
-        bars = ax.bar(labels, total_counts, color='lightgray', label='Total')
-        responsive_bars = ax.bar(labels, responsive_counts, color='blue', label='Responsive')
-
-        # Add value labels on top of bars
-        for bar, count, total_count in zip(bars, responsive_counts, total_counts):
-            height = bar.get_height()
-            percentage = (count/total_count)*100
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{percentage:.1f}%\n({count}/{total_count})',
-                   ha='center', va='bottom', fontsize=12,
-                   )
-
-        # Customize the plot
-        ax.set_ylabel('Number of Responsive Cells', fontsize=14)
-        ax.set_ylim(0, total_counts[0] * 1.2)  # Add 20% space for labels
-        plt.xticks(rotation=45, ha='right')
-        ax.legend()
-        
-        plt.tight_layout()
-        plt.show()
-
-        return fig
-
-        
-    def plot_responsive_pie_chart(self):
-
-        # Create a larger figure with more space for the pie charts
-        fig, axes = plt.subplots(1, 1+len(self.radial_stats), figsize=(12, 2*len(self.radial_stats)))
-
-        # first axes will be the total responsive pie chart
-        # Extract unique responsive cells across conditions
-        responsive_cells = []
-        for i, stat_df in enumerate(self.radial_stats):
-            responsive = set(stat_df.loc[stat_df['is_reliable'] == True, 'cell_id'].values)
-            responsive_cells.append(np.array(list(responsive)))
-
-        # concatenate the arrays
-        responsive_cells = np.concatenate(responsive_cells)
-        # find the unique cells
-        responsive_cells = np.unique(responsive_cells)
-
-        axes[0].pie([len(responsive_cells), len(self.R.suite2p_id) - len(responsive_cells)], 
-                        labels=[f'Responsive ({len(responsive_cells)}/{len(self.R.suite2p_id)})', f'Non-reliable ({len(self.R.suite2p_id) - len(responsive_cells)}/{len(self.R.suite2p_id)})'],
-                        autopct='%1.1f%%',
-                        colors=['#4CAF50', '#F44336'],
-                        startangle=90,
-                        shadow=True,
-                        textprops={'fontsize': 16})
-        axes[0].set_title('Either condition', fontsize=20)
-
-        # Data for pie charts from stats DataFrame
-        responsive_counts = []
-        non_responsive_counts = []
-
-        for i, df in enumerate(self.radial_stats):
-
-            condition_name = df['condition'][0]
-            responsive_count = df['is_reliable'].sum()
-            total_count = len(df)
-            non_responsive_count = total_count - responsive_count
-            
-            responsive_counts.append(responsive_count)
-            non_responsive_counts.append(non_responsive_count)
-            
-            axes[i+1].pie([responsive_count, non_responsive_count], 
-                        labels=[f'Responsive ({responsive_count}/{total_count})', f'Non-reliable ({non_responsive_count}/{total_count})'],
-                        autopct='%1.1f%%',
-                        colors=['#4CAF50', '#F44336'],
-                        startangle=90,
-                        shadow=True,
-                        textprops={'fontsize': 16})
-            axes[i+1].set_title(f'{condition_name}', fontsize=20)
-
-        plt.tight_layout()
-        plt.subplots_adjust(wspace=0.3)  # Add more space between subplots
-        plt.show()
 
         return fig
 
@@ -1139,38 +1169,35 @@ class RadialSummaries():
 
         # Show plot
         plt.tight_layout()
-        plt.show()
 
         return fig
 
-    def plot_preferred_distance(self):
+    def plot_preferred_distance_bars(self):
 
         # plot a barplot of the preferred distance distribution for each condition
         # check number of conditions and make figure accordingly
         n_conditions = len(self.modulated_cells.keys())
-        fig, ax = plt.subplots(figsize=(3*n_conditions, 6))
+        fig, ax = plt.subplots(figsize=(2*n_conditions, 5))
 
         # Prepare data for barplot
         # Get preferred distances for each condition
         distances = [0, 1, 2, 3]
-        conditions = list(self.modulated_cells.keys()) + ['non_modulated']
-        cells_to_plot = [self.modulated_cells[condition] for condition in conditions[:-1]] + [self.non_modulated_cells]
+        conditions = list(self.modulated_cells.keys())
         
         # Initialize lists to store data
         all_pref_distances = []
         
         # Process each condition from modulated_cells
-        for i, condition in enumerate(conditions):
-            cells_pref_distances = []
-            for cell in cells_to_plot[i]:
-                if condition == 'non_modulated' or condition == 'all_conditions':
-                    pref_distance = self.radial_stats[-1].loc[self.radial_stats[-1]['cell_id'] == cell, 'pref_distance'].values[0]
-                else:
-                    pref_distance = self.radial_stats[i].loc[self.radial_stats[i]['cell_id'] == cell, 'pref_distance'].values[0]
+        for stat in self.radial_stats:
+
+            for condition in conditions:
+                cells_pref_distances = []
+                for cell in self.modulated_cells[condition]:
+                    pref_distance = stat.loc[stat['cell_id'] == cell, 'pref_distance'].values[0]
+                    cells_pref_distances.append(pref_distance)
                 
-                cells_pref_distances.append(pref_distance)
+                all_pref_distances.append(np.array(cells_pref_distances))
             
-            all_pref_distances.append(np.array(cells_pref_distances))
         
         # Count cells for each distance in each condition
         counts_by_distance = []
@@ -1196,7 +1223,8 @@ class RadialSummaries():
         ax.set_ylabel('Number of Cells')
         ax.set_xlabel('Condition')
         ax.set_xticklabels(conditions, fontsize=12)
-        ax.set_title('Distribution of Preferred Distances by Condition')
+        fig.suptitle('Preferred Distance by Condition', fontsize=18, color='black', y=0.94)
+        ax.set_title(self.session_name, fontsize=14, color='grey', pad=2)
         ax.set_xticks([r + 1.5 * bar_width for r in range(len(conditions))])
         ax.legend()
         
@@ -1212,16 +1240,138 @@ class RadialSummaries():
         ax.grid(axis='y', linestyle='--', alpha=0.7)
         
         plt.tight_layout()
-        plt.show()
 
         return fig
     
+    def plot_preferred_distance_polar(self):
 
-    def plot_receptive_field_map(self, condition):
+        fig = plt.figure(figsize=(8, 5))
+        ax = fig.add_subplot(1, 1, 1, polar=True)
 
-        cells_to_plot = self.responsive_cells[condition]
-        # Filter stats for given condition
-        stats_df = self.radial_stats['condition'==condition]
+        # Plot preferred distance and angle for each condition
+        condition_colors = {
+            'binocular': 'lightgreen',
+            'monocular': 'coral'
+        }
+        for i, (cond, color) in enumerate(condition_colors.items()):
+            if cond in self.modulated_cells:
+                mod_cells = self.modulated_cells[cond]
+                pref_distances = []
+                pref_angles = []
+                # Find the corresponding stat_df for this condition
+                stat_df = None
+                for df in self.radial_stats:
+                    if not df.empty and df['condition'].iloc[0] == cond:
+                        stat_df = df
+                        break
+                if stat_df is not None:
+                    for cell in mod_cells:
+                        row = stat_df[stat_df['cell_id'] == cell]
+                        if not row.empty:
+                            noisy_distance = row['pref_distance'].values[0] + np.random.uniform(-0.2, 0.2)
+                            pref_distances.append(noisy_distance + 1)
+                            pref_angles.append(row['rf_position'].values[0])
+                    theta = np.radians(pref_angles)
+                    ax.scatter(theta, pref_distances, c=color, s=40, edgecolor='k', alpha=0.9, label=cond.capitalize())
+
+        ax.set_theta_zero_location('N')
+        ax.set_theta_direction(-1)
+        ax.set_thetamin(-30)
+        ax.set_thetamax(75)
+        fig.suptitle('Modulation by Preferred Angle', fontsize=18, color='black', y=0.94)
+        ax.set_title(self.session_name, fontsize=14, color='grey', pad=2)
+        ax.set_ylabel('Preferred Distance')
+        ax.legend()
+
+        plt.tight_layout()
+
+        return fig
+    
+    def plot_preferred_distance_polar_density(self):
+        """
+        Plot a density plot of preferred distances (4 bins) vs. preferred angles (binned), 
+        as a radial pcolormesh for each condition.
+        Rows: distances (4 bins), Columns: angles (binned).
+        """
+        import matplotlib as mpl
+
+        # Define bins
+        distance_bins = np.array([1, 2, 3, 4, 5])  # 4 bins: [1-2), [2-3), [3-4), [4-5)
+        angle_min, angle_max = -30, 75
+        n_angle_bins = 18
+        angle_bins = np.linspace(angle_min, angle_max, n_angle_bins + 1)  # e.g. 6 deg per bin
+
+        # For each condition, build a 2D histogram: (distance_bin, angle_bin)
+        condition_colors = {
+            'binocular': 'Greens',
+            'monocular': 'Reds'
+        }
+
+        fig = plt.figure(figsize=(10, 5))
+        n_conds = len(condition_colors)
+        for i, (cond, cmap_name) in enumerate(condition_colors.items()):
+            # Prepare data
+            pref_distances = []
+            pref_angles = []
+            if cond in self.modulated_cells:
+                mod_cells = self.modulated_cells[cond]
+                # Find the corresponding stat_df for this condition
+                stat_df = None
+                for df in self.radial_stats:
+                    if not df.empty and df['condition'].iloc[0] == cond:
+                        stat_df = df
+                        break
+                if stat_df is not None:
+                    for cell in mod_cells:
+                        row = stat_df[stat_df['cell_id'] == cell]
+                        if not row.empty:
+                            # Add small noise to avoid binning artifacts
+                            noisy_distance = row['pref_distance'].values[0] + np.random.uniform(-0.2, 0.2)
+                            noisy_angle = row['rf_position'].values[0] + np.random.uniform(-1, 1)
+                            pref_distances.append(noisy_distance + 1)  # +1 to match original code
+                            pref_angles.append(noisy_angle)
+            # Bin data
+            H, r_edges, theta_edges = np.histogram2d(
+                pref_distances, pref_angles,
+                bins=[distance_bins, angle_bins]
+            )
+            # Prepare meshgrid for pcolormesh
+            # r: [distance_bins], theta: [angle_bins] in radians
+            r, theta = np.meshgrid(distance_bins, np.radians(angle_bins), indexing='ij')
+            # H shape: (4, n_angle_bins)
+            # For pcolormesh, need (r.shape[0], r.shape[1])
+            # Plot
+            ax = fig.add_subplot(1, n_conds, i+1, polar=True)
+            # pcolormesh expects theta (angle) as 2D array, r as 2D array, and H.T as values
+            # But meshgrid above is (4, n_angle_bins+1), H is (4, n_angle_bins)
+            # So we need to transpose H for correct orientation
+            pcm = ax.pcolormesh(
+                np.radians(angle_bins),  # theta edges
+                distance_bins,           # r edges
+                H,                       # shape (4, n_angle_bins)
+                cmap=cmap_name,
+                shading='auto'
+            )
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(-1)
+            ax.set_thetamin(angle_min)
+            ax.set_thetamax(angle_max)
+            ax.set_ylim(distance_bins[0], distance_bins[-1])
+            ax.set_yticks(distance_bins[:-1] + 0.5)
+            ax.set_yticklabels([f"{int(distance_bins[j])}-{int(distance_bins[j+1])}" for j in range(len(distance_bins)-1)])
+            ax.set_xticks(np.radians(np.linspace(angle_min, angle_max, 8)))
+            ax.set_title(f"{cond.capitalize()}", fontsize=14)
+            cbar = fig.colorbar(pcm, ax=ax, pad=0.1, orientation='vertical', shrink=0.8)
+            cbar.set_label('Cell Density', fontsize=10)
+            if i == 0:
+                ax.set_ylabel('Preferred Distance Bin')
+        fig.suptitle('Density of Preferred Distance vs. Angle', fontsize=18, color='black', y=0.98)
+        plt.tight_layout()
+        return fig
+
+    def plot_reliable_cells_map(self):
+
+        cells_to_plot = self.R.suite2p_id
 
         # Load Suite2p outputs
         stat = np.load(self.R.activity_path + r'\stat.npy', allow_pickle=True)
@@ -1232,34 +1382,191 @@ class RadialSummaries():
         vmin = np.percentile(mean_img, 1)
         vmax = np.percentile(mean_img, 99)
 
-        fig = plt.figure(figsize=(10, 10))
-        plt.imshow(ops['refImg'], alpha=0.5, cmap='gray', vmin=vmin, vmax=vmax)
-
-        n_angles = len(self.R.angle_range)
-        cmap = plt.get_cmap('viridis', n_angles)
-        angle_colors = [cmap(i) for i in range(n_angles)]
+        fig, ax = plt.subplots(figsize=(10, 10))
+        ax.imshow(ops['refImg'], alpha=0.5, cmap='gray', vmin=vmin, vmax=vmax)
 
         # Scatter plot each pixel
         for cell_id in cells_to_plot:
-            idx = np.where(self.R.suite2p_id == cell_id)[0][0]
-            ypix = stat[idx]['ypix'][~stat[idx]['overlap']].mean()
-            xpix = stat[idx]['xpix'][~stat[idx]['overlap']].mean()
+            ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
+            xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
 
-            rf_location = stats_df.loc[stats_df['cell_id'] == cell_id, 'rf_position'].values[0]
+            if cell_id not in self.responsive_cells:
+                sc = ax.scatter(
+                    xpix, ypix,
+                    c='lightgray',
+                    s=150, alpha=0.8,
+                    edgecolor='black', linewidth=1
+                )
+            else:
+                rf_location = self.R.find_rf_position(cell_id, distance=None, monocular=None)
+                sc = ax.scatter(
+                    xpix, ypix,
+                    c=rf_location,
+                    cmap='viridis',
+                    vmin=-30,
+                    vmax=75,
+                    s=150, alpha=1,
+                    edgecolor='black', linewidth=1
+                )
 
-            # Map rf_location (an angle) to the closest angle in self.R.angle_range, then use that index for color
-            angle_diffs = np.abs(np.array(self.R.angle_range) - rf_location)
-            color_idx = int(np.argmin(angle_diffs))
-            color = angle_colors[color_idx]
-            plt.scatter(xpix, ypix, c=[color], s=100, alpha=1, edgecolor='black', linewidth=1)
-
-
-
-
-        plt.axis('off')
+        # Remove all axes, spines, ticks, and colorbar for a pure image
+        ax.axis('off')
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        plt.margins(0, 0)
         plt.tight_layout(pad=0)
-        plt.show()
+
+        return fig
+    
+    def plot_rf_density_map(self, bins = 20):
+        """
+        Plot a 2D map where each spatial bin is colored by the average RF location
+        of the cells whose centers lie in that bin.
         
+        Parameters
+        ----------
+        nx_bins, ny_bins : int
+            Number of bins along the x and y dimensions.
+        """
+        # 1) Load Suite2p outputs
+        stat = np.load(self.R.activity_path + '/stat.npy', allow_pickle=True)
+        ops = np.load(self.R.activity_path + '/ops.npy', allow_pickle=True).item()
+        ref_img = ops['refImg']
+        
+        # 2) Gather (x, y) centroids and RF values for responsive cells
+        xs, ys, rfvals = [], [], []
+        for cell_id in self.responsive_cells:
+            
+            ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
+            xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
+            rf = self.pullout_stat(cell_id=cell_id, condition='binocular', stat_type='pref_angle')
+            
+            xs.append(xpix)
+            ys.append(ypix)
+            rfvals.append(rf)
+        
+        xs = np.array(xs)
+        ys = np.array(ys)
+        rfvals = np.array(rfvals)
+
+        # 3) Compute mean RF in each 2D bin, but only if a bin has more than one sample
+        #    We'll use binned_statistic_2d to get both the mean and the count
+
+        # Compute mean RF per bin
+        mean_rf, x_edges, y_edges, binnumber = binned_statistic_2d(
+            xs, ys, rfvals,
+            statistic='mean',
+            bins=[bins, bins],
+            expand_binnumbers=False
+        )
+        # Compute count per bin
+        count_rf, _, _, _ = binned_statistic_2d(
+            xs, ys, rfvals,
+            statistic='count',
+            bins=[bins, bins],
+            expand_binnumbers=False
+        )
+        # Mask bins with <=1 sample
+        mean_rf[count_rf <= 1] = np.nan
+        # mean_rf shape is (nx_bins, ny_bins), but imshow wants [rows=y, cols=x],
+        # so we'll transpose it.
+        
+        # 4) Plot
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        # Show background reference image faintly
+        vmin = np.percentile(ref_img, 1)
+        vmax = np.percentile(ref_img, 99)
+        
+        ax.imshow(
+            ref_img,
+            cmap='gray',
+            alpha=0.8,
+            vmin=vmin,
+            vmax=vmax,
+            origin='lower',
+            extent=[0, ref_img.shape[1], 0, ref_img.shape[0]]
+        )
+        
+        # Overlay the binned RF map
+        im = ax.imshow(
+            mean_rf.T,
+            cmap='viridis',
+            alpha=0.8,
+            vmin=-30, vmax=75,
+            interpolation='nearest',
+            origin='upper',
+            extent=[x_edges[0], x_edges[-1], y_edges[-1], y_edges[0]]
+        )
+        cbar = fig.colorbar(im, ax=ax, label='Mean RF Location', shrink=0.8)
+        
+        ax.set_title(f'{self.session_name} — RF Density Map', fontsize=16, color='black')
+        ax.axis('off')
+        plt.tight_layout(pad=0)
+        
+        return fig
+    
+
+    def plot_modulated_cells_map(self, condition='binocular'):
+
+        cells_to_plot = self.modulated_cells[condition]
+
+        if condition == 'binocular':
+            idx_condition = 1
+        elif condition == 'monocular':
+            idx_condition = 0
+
+        # Load Suite2p outputs
+        stat = np.load(self.R.activity_path + r'\stat.npy', allow_pickle=True)
+        ops = np.load(self.R.activity_path + r'\ops.npy', allow_pickle=True).item()
+
+        # Background image setup
+        mean_img = ops['meanImg']
+        vmin = np.percentile(mean_img, 1)
+        vmax = np.percentile(mean_img, 99)
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+        plt.imshow(ops['refImg'], alpha=0.5, cmap='gray', vmin=vmin, vmax=vmax)
+
+        # Scatter plot each pixel
+        
+        for cell_id in self.responsive_cells:
+
+            if cell_id in cells_to_plot:
+                continue
+
+            ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
+            xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
+
+            ax.scatter(
+                xpix, ypix,
+                c='lightgray',
+                s=150, alpha=0.5,
+                edgecolor='black', linewidth=1
+            )
+
+        for cell_id in cells_to_plot:
+
+            ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
+            xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
+
+            pref_distance = self.pullout_stat(cell_id=cell_id, condition=condition, stat_type='pref_distance')
+
+            ax.scatter(
+                xpix, ypix,
+                c=self.colors[pref_distance],
+                s=150, alpha=1,
+                edgecolor='black', linewidth=1
+            )
+
+
+        ax.axis('off')
+        plt.tight_layout(pad=0)
+
+        return fig
     
     def plot_location_map(self, condition):
 
@@ -1297,10 +1604,24 @@ class RadialSummaries():
 
         plt.axis('off')
         plt.tight_layout(pad=0)
-        plt.show()
 
         return fig
 
+class MultiSession:
 
+    def __init__(self, session_names):
+        self.session_names = session_names
 
+        for session_name in session_names:
 
+    
+    def get_suite2p_dir(self, session_name):
+        return r'D:/data-distance-coding-project/processed-data/{session_name}/suite2p'.format(session_name=session_name)
+    
+    def get_field_coordinates(self, session_name):
+        return np.load(self.get_suite2p_dir(session_name) + r'\field_coordinates.npy')
+    
+    def get_mean_img(self, session_name):
+        return np.load(self.get_suite2p_dir(session_name) + r'\meanImg.npy')
+    
+        

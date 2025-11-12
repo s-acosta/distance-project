@@ -1,8 +1,8 @@
 % reference =  reference_3;
 load('snap.mat')
 load('maps.mat');
-load('alt.mat')
-load('azi.mat')
+% load('alt.mat')
+% load('azi.mat')
 reference = snap;
 reference = imresize(reference, size(maps.VFS_processed));
 maps.HorizontalRetinotopy = maps.HorizontalRetinotopy;

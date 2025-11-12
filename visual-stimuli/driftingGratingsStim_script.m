@@ -122,8 +122,10 @@ for ori = 1:numel(orientation_list)
 end
 
 % Instantiate objects
+window = Screen('OpenWindow', 1, WhiteIndex(1)/2);
 manager = StimulusManager(stimulus);
 manager.setScreenID(1);
+
 
 manager.initialize();
 manager.setTrigger(DAQ_flag); 
@@ -131,8 +133,9 @@ manager.setTrigger(DAQ_flag);
 manager.start();
 
 % Present the stimulus
-for p = 1:numel(orientation_sequence)
+for p = 1:numel(orientation_list)
     manager.present(p);
+    imageArray = Screen('GetImage', windowPtr);
 end
 
 manager.finish();

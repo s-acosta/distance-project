@@ -16,6 +16,14 @@ from scipy.stats import f_oneway, ttest_ind, linregress, binned_statistic_2d
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
 import scipy.stats
+import cv2
+from matplotlib.widgets import Slider
+import pickle
+from scipy.io import loadmat
+from scipy.ndimage import gaussian_filter
+from matplotlib.patches import Polygon
+from matplotlib.widgets import LassoSelector
+from matplotlib.path import Path
 
 class RadialDevice:
 
@@ -213,7 +221,7 @@ class RadialDevice:
         rf_position = self.find_rf_position(cell, distance=distance, monocular=monocular)
         rf_idx = np.where(self.angle_range == rf_position)[0][0]
         
-        window_size = 3
+        window_size = 5
         # get the mean trace for this cell
         
         on_traces = self.get_all_traces(cell,  
@@ -281,7 +289,7 @@ class RadialDevice:
         return corr, corr_shifted
 
 
-    def analyze_cell_reliability(self, cell, n_iterations=100, distance=None, monocular=None):
+    def analyze_cell_reliability(self, cell, n_iterations=100, reliable_threshold = 0.85, distance=None, monocular=None):
         """
         Analyzes the reliability of a cell's response by comparing split-half correlations.
         
@@ -297,7 +305,7 @@ class RadialDevice:
         """
 
         corr, corr_shifted = self.compute_reliability(cell, distance=distance, monocular=monocular, n_iterations=n_iterations)
-        visually_responsive = np.mean(corr) > np.percentile(corr_shifted, 99)
+        visually_responsive = np.mean(corr) > np.percentile(corr_shifted, 99.5)
 
         corr_control, corr_shifted_control = self.compute_reliability(cell, distance=4, monocular=monocular, n_iterations=n_iterations)
         control_responsive = np.mean(corr_control) > np.percentile(corr_shifted_control, 99)
@@ -309,7 +317,7 @@ class RadialDevice:
         control_comparison = [rf_values_control > rf_values for rf_values in rf_values_distances]
         control_higher = np.sum(control_comparison) > 1
 
-        is_reliable = visually_responsive and not (control_responsive or control_higher)
+        is_reliable = visually_responsive and not (control_responsive or control_higher) and np.mean(corr) > reliable_threshold
 
         return is_reliable, visually_responsive, control_responsive, control_higher
     
@@ -477,7 +485,7 @@ class RadialPlots:
 
     def __init__(self, radial_class):
         self.R = radial_class
-        self.colors = ['orange', '#35b779', '#31688e', '#440154', 'grey']
+        self.colors = ['#FFA500', '#35b779', '#31688e', '#440154', 'grey']
         pass
 
     def plot_stimulus_response(self, repeats=10, cell = None):
@@ -1509,7 +1517,6 @@ class RadialSummaries():
         
         return fig
     
-
     def plot_modulated_cells_map(self, condition='binocular'):
 
         cells_to_plot = self.modulated_cells[condition]
@@ -1607,21 +1614,717 @@ class RadialSummaries():
 
         return fig
 
-class MultiSession:
+class RadialMultiSession:
 
-    def __init__(self, session_names):
+    def __init__(self, animal_id, session_names):
+
+        self.animal_id = animal_id
+        self.animal_dir = self.get_animal_dir()
+        self.fov_pixels = 760
+        self.fov_units = 2000
+
         self.session_names = session_names
+        self.numeral_names = session_names.keys()
+        self.mean_images = self.load_mean_images()
+        self.field_coordinates = self.load_coordinates()
 
-        for session_name in session_names:
+        self.widefield_fov_pixels = 400
+        self.widefield_fov_units = 5200
+        self.widefield_img = None
+        self.widefield_img_shifted = None
+        self.VFS = None
+        self.VFS_shifted = None
+        self.load_widefield_maps()
+        self.shift_widefield()
+        self.area_names = ['V1', 'LM', 'AL', 'RL', 'AM', 'PM']
 
-    
+        self.radial_sessions = self.load_radial_sessions()
+        self.areas_verts = self.load_areas_verts()
+
+    def get_animal_dir(self):
+        return r'D:/data-distance-coding-project/processed-data/{animal_id}'.format(animal_id=self.animal_id + '_radial')
+
     def get_suite2p_dir(self, session_name):
         return r'D:/data-distance-coding-project/processed-data/{session_name}/suite2p'.format(session_name=session_name)
+
+    def load_mean_images(self):
+
+        mean_images = {}
+        for numeral in self.numeral_names:
+            print(self.session_names[numeral])
+            ops = np.load(self.get_suite2p_dir(self.session_names[numeral]) + r'\plane0\ops.npy', allow_pickle=True).item()
+            mean_images[numeral] = ops['meanImg']
+        return mean_images
+
+    def load_coordinates(self):
+
+        field_coordinates = {}
+        try:
+            with open(self.animal_dir + r'/' + self.animal_id + '_field_coordinates.pkl', 'rb') as f:
+                field_coordinates = pickle.load(f)
+        except:
+            field_coordinates = {}
+            for numeral in self.numeral_names:
+                field_coordinates[numeral] = self.align_translation(moving_numeral=numeral)
+            
+            with open(self.animal_dir + r'/' + self.animal_id + '_field_coordinates.pkl', 'wb') as f:
+                pickle.dump(field_coordinates, f)
+
+        return field_coordinates
     
-    def get_field_coordinates(self, session_name):
-        return np.load(self.get_suite2p_dir(session_name) + r'\field_coordinates.npy')
+    def load_areas_verts(self):
+        try:
+            with open(self.animal_dir + r'/' + self.animal_id + '_areas_verts.pkl', 'rb') as f:
+                areas_verts = pickle.load(f)
+        except:
+            areas_verts = self.draw_areas()
+            with open(self.animal_dir + r'/' + self.animal_id + '_areas_verts.pkl', 'wb') as f:
+                pickle.dump(areas_verts, f)
+        return areas_verts
     
-    def get_mean_img(self, session_name):
-        return np.load(self.get_suite2p_dir(session_name) + r'\meanImg.npy')
+    def load_radial_sessions(self):
+
+        try:
+            with open(self.animal_dir + r'/' + self.animal_id + '_radial_sessions.pkl', 'rb') as f:
+                radial_sessions = pickle.load(f)
+            print(f'Radial sessions loaded for {self.animal_id}')
+        except:
+            print(f'No radial sessions found for {self.animal_id}')
+            radial_sessions = self.compute_sessions_stats()
+            with open(self.animal_dir + r'/' + self.animal_id + '_radial_sessions.pkl', 'wb') as f:
+                pickle.dump(radial_sessions, f)
+
+        return radial_sessions
     
+    def compute_sessions_stats(self):
+
+        tagged = []
+
+        for name in self.numeral_names:
+
+            print('Processing session: ', name)
+
+            # load this
+            summ_name = self.session_names[name] + '_summ.pkl'
+            summ_dir = self.get_animal_dir() + r'/' + summ_name
+            with open(summ_dir, 'rb') as f:
+                summ = pickle.load(f)
+                print('Summ loaded for: ', name)
+
+            session_coords = self.field_coordinates[name]
+            suite2p_stat = np.load(self.get_suite2p_dir(self.session_names[name]) + r'\plane0\stat.npy', allow_pickle=True)
+
+            cell_coords = []
+            for cell_id in summ.radial_stats['cell_id']:
+                x_units, y_units = self.extract_cell_coordinates(suite2p_stat, session_coords, cell_id)
+                cell_coords.append([x_units, y_units])
+
+            df = summ.radial_stats.copy()
+            df.insert(1, 'session', name)
+            df.insert(2, 'coords', cell_coords)
+
+            tagged.append(df)
+
+        radial_sessions = pd.concat(tagged, ignore_index=True)
+
+        return radial_sessions
+
+    def align_translation(self, fixed_numeral = 'IV',
+                      moving_numeral = 'I',
+                      pixels_per_unit=760/2000,
+                      canvas_units=4000,
+                      slider_limit_px=1000, show_result = True):
+        """
+        Launch an interactive alignment tool.
+
+        Parameters
+        ----------
+        fixed_img : ndarray
+            The reference image (grayscale or color) as a NumPy array.
+        moving_img : ndarray
+            The image to be translated to align with fixed_img.
+            Must already be the same shape as fixed_img.
+        pixels_per_unit : float, optional
+            Conversion factor from pixels to your “unit” system.
+        canvas_units : int, optional
+            Side length (in your units) of the virtual canvas to pad into.
+        slider_limit_px : int, optional
+            Maximum absolute translation (in px) for the sliders.
+
+        Returns
+        -------
+        dx : int
+            Final horizontal translation (in px) you selected.
+        dy : int
+            Final vertical translation (in px) you selected.
+        """
+        # Ensure interactive backend for external window
         
+
+        # Utility sub‐functions
+        def translate_image(img, dx, dy):
+            h, w = img.shape[:2]
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            return cv2.warpAffine(img, M, (w, h),
+                                borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=0)
+
+        def pad_to_canvas(img, canvas_size):
+            canvas = np.zeros(canvas_size, dtype=img.dtype)
+            h, w = img.shape[:2]
+            ch, cw = canvas_size
+            y_off = (ch - h)//2
+            x_off = (cw - w)//2
+            canvas[y_off:y_off+h, x_off:x_off+w] = img
+            return canvas
+        
+        fixed_img = self.mean_images[fixed_numeral]
+        moving_img = self.mean_images[moving_numeral]
+
+        # Compute canvas in pixels
+        canvas_size_px = int(canvas_units / (1/pixels_per_unit))
+        canvas_shape = (canvas_size_px, canvas_size_px)
+
+        # Pad both images
+        fixed_pad  = pad_to_canvas(fixed_img,  canvas_shape)
+        moving_pad = pad_to_canvas(moving_img, canvas_shape)
+
+        # Set up figure + sliders
+        fig, ax = plt.subplots()
+        plt.subplots_adjust(bottom=0.25)
+
+        # Initial blend
+        dx0, dy0 = 0, 0
+        blended = cv2.addWeighted(fixed_pad, 0.5,
+                                translate_image(moving_pad, dx0, dy0),
+                                0.5, 0)
+        # define extents in units
+        half = canvas_size_px // 2
+        extent = [-half*pixels_per_unit, half*pixels_per_unit,
+                -half*pixels_per_unit, half*pixels_per_unit]
+        img_disp = ax.imshow(blended, cmap='gray', extent=extent)
+
+        # Print the moving image title in the plot title
+        ax.set_title(f"Aligning moving image: {moving_numeral}")
+
+        # sliders
+        ax_dx = plt.axes([0.25, 0.1, 0.5, 0.03])
+        ax_dy = plt.axes([0.25, 0.15, 0.5, 0.03])
+        sdx = Slider(ax_dx, 'dx (px)', -slider_limit_px,
+                    slider_limit_px, valinit=dx0, valstep=1)
+        sdy = Slider(ax_dy, 'dy (px)', -slider_limit_px,
+                    slider_limit_px, valinit=dy0, valstep=1)
+
+        def _update(_):
+            dx, dy = int(sdx.val), int(sdy.val)
+            trans = translate_image(moving_pad, dx, dy)
+            blend = cv2.addWeighted(fixed_pad, 0.5, trans, 0.5, 0)
+            img_disp.set_data(blend)
+            ax.set_title(
+                f"Aligning moving image: {moving_numeral} | "
+                f"dx = {dx} px ({dx * pixels_per_unit:.2f} units), "
+                f"dy = {dy} px ({dy * pixels_per_unit:.2f} units)"
+            )
+            fig.canvas.draw_idle()
+
+        sdx.on_changed(_update)
+        sdy.on_changed(_update)
+
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+
+        # Show and block until window is closed, in a separate window
+        plt.show(block=True)
+
+        if show_result:
+            result_img = translate_image(moving_pad, int(sdx.val), int(sdy.val))
+            blended_result = cv2.addWeighted(fixed_pad, 0.5, result_img, 0.5, 0)
+            plt.figure()
+            plt.imshow(blended_result, cmap='gray')
+            plt.title("Final alignment: fixed + shifted moving")
+            plt.show()
+
+        # Return final values
+        return self.pixels_to_units(int(sdx.val), scope='2p'), self.pixels_to_units(int(sdy.val), scope='2p')
+
+    def pixels_to_units(self, pixels, scope='2p'):
+
+        if scope == '2p':
+            return pixels * (self.fov_units / self.fov_pixels)
+        elif scope == 'widefield':
+            return pixels * (self.widefield_fov_units / self.widefield_fov_pixels)
+    
+    def units_to_pixels(self, units, scope='2p'):
+
+        if scope == '2p':
+            return units * (self.fov_pixels / self.fov_units)
+        elif scope == 'widefield':
+            return units * (self.widefield_fov_pixels / self.widefield_fov_units)
+
+    def plot_window(self, ax=None):
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 8), dpi=100)  # 8x8 inches, adjust as needed
+
+        # Plot each image at its field coordinates
+        for name in self.numeral_names:
+
+            img = self.mean_images[name]
+            dx_units, dy_units = self.field_coordinates[name]
+            img_h, img_w = img.shape
+            img_w_units = self.pixels_to_units(img_w, scope='2p')
+            img_h_units = self.pixels_to_units(img_h, scope='2p')
+            # Calculate extent in units for this image, centered at (dx_units, dy_units)
+            extent_units = [
+                dx_units - img_w_units/2, dx_units + img_w_units/2,
+                dy_units + img_h_units/2, dy_units - img_h_units/2  # origin='upper'
+            ]
+            ax.imshow(img, cmap='gray', alpha=1, extent=extent_units, origin='upper', label=name)
+
+        # Set axis limits in units (canvas is 4000x4000 units)
+        ax.set_xlim(-2500, 2500)
+        ax.set_ylim(2500, -2500)
+        ax.set_xlabel("X (units)")
+        ax.set_ylabel("Y (units)")
+        ax.set_title("All Images on Figure Canvas (units)")
+
+        return fig, ax
+     
+    def extract_cell_coordinates(self, suite2p_stat, session_coords, cell_id):
+
+        cell_stat = suite2p_stat[cell_id]
+
+        xpix = cell_stat['xpix'][~cell_stat['overlap']].mean() - 380
+        ypix = cell_stat['ypix'][~cell_stat['overlap']].mean() - 380
+
+        x_units = self.pixels_to_units(xpix, scope='2p') + session_coords[0]
+        y_units = self.pixels_to_units(ypix, scope='2p') + session_coords[1]
+
+        return x_units, y_units
+    
+    
+    def load_widefield_maps(self):
+
+        # Load the snap.mat file from the animal directory
+        snap_mat_path = os.path.join(self.animal_dir, 'snap.mat')
+        snap_data = loadmat(snap_mat_path)
+        widefield_img = snap_data['snap']
+
+        # resize widefield_img to the size of 400x400
+        widefield_img = cv2.resize(widefield_img, (400, 400))
+
+        self.widefield_img = widefield_img
+
+        maps_mat_path = os.path.join(self.animal_dir, 'maps.mat')
+        maps_data = loadmat(maps_mat_path, struct_as_record=False, squeeze_me=True)
+        self.VFS = maps_data['maps'].VFS_raw
+        self.VFS = gaussian_filter(self.VFS, sigma=1.5)
+
+        # Allow user to pick a point in the widefield image to set as the origin, then shift the image accordingly
+
+    def set_widefield_origin(self):
+
+        # 1) show image with origin='lower' so X→cols, Y→rows directly
+        fig, ax = plt.subplots(figsize=(6,6))
+        ax.imshow(
+            self.widefield_img,
+            cmap='gray',
+            extent=[0, self.widefield_fov_pixels, 0, self.widefield_fov_pixels],
+            origin='upper'
+        )
+        ax.set_title("Click to set the origin (0,0) in widefield pixels")
+    
+
+        print("Please click on the image to set the new origin (0,0).")
+        x_click, y_click = plt.ginput(1, timeout=-1)[0]
+        plt.close(fig)
+
+        # 2) convert to integer array indices
+        clicked_col = int(400 - round(y_click))
+        clicked_row = int(round(x_click))
+
+        # 3) figure out how many pixels to shift
+        n_rows, n_cols = self.widefield_img.shape
+        center_col = n_cols // 2
+        center_row = n_rows // 2
+
+        dx = center_col - clicked_col   # how far to shift columns (axis=1)
+        dy = center_row - clicked_row   # how far to shift rows    (axis=0)
+
+        return dx, dy
+
+    def shift_widefield(self):
+
+        dx, dy = self.set_widefield_origin()
+
+        # Shift widefield image
+        shifted_img = np.roll(self.widefield_img, shift=(dy, dx), axis=(0, 1))
+        # Zero out new empty strips for widefield image
+        if dy > 0:
+            shifted_img[:dy, :] = 0
+        elif dy < 0:
+            shifted_img[dy:, :] = 0
+        if dx > 0:
+            shifted_img[:, :dx] = 0
+        elif dx < 0:
+            shifted_img[:, dx:] = 0
+        self.widefield_img_shifted = shifted_img
+
+        # Shift VFS map
+        shifted_vfs = np.roll(self.VFS, shift=(dy, dx), axis=(0, 1))
+        # Zero out new empty strips for VFS map
+        if dy > 0:
+            shifted_vfs[:dy, :] = 0
+        elif dy < 0:
+            shifted_vfs[dy:, :] = 0
+        if dx > 0:
+            shifted_vfs[:, :dx] = 0
+        elif dx < 0:
+            shifted_vfs[:, dx:] = 0
+        self.VFS_shifted = shifted_vfs
+
+        # Show both shifted images in a figure with two subplots
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+        # Widefield image subplot
+        axs[0].imshow(
+            shifted_img,
+            cmap='gray',
+            extent=[0, self.widefield_fov_units, 0, self.widefield_fov_units],
+            origin='upper'
+        )
+        axs[0].set_title("Shifted Widefield Image")
+        axs[0].set_xlabel("Widefield units (um)")
+        axs[0].set_ylabel("Widefield units (um)")
+        center_units = self.widefield_fov_units / 2
+        axs[0].axhline(center_units, color='red', linestyle='--', linewidth=1)
+        axs[0].axvline(center_units, color='red', linestyle='--', linewidth=1)
+
+        # VFS map subplot
+        im = axs[1].imshow(
+            shifted_vfs,
+            cmap='jet',
+            extent=[0, self.widefield_fov_units, 0, self.widefield_fov_units],
+            origin='upper'
+        )
+        axs[1].set_title("Shifted VFS Map")
+        axs[1].set_xlabel("Widefield units (um)")
+        axs[1].set_ylabel("Widefield units (um)")
+        axs[1].axhline(center_units, color='red', linestyle='--', linewidth=1)
+        axs[1].axvline(center_units, color='red', linestyle='--', linewidth=1)
+        fig.colorbar(im, ax=axs[1], fraction=0.046, pad=0.04)
+
+        plt.tight_layout()
+
+    def draw_areas(self):
+
+        if self.VFS_shifted is None:
+            self.shift_widefield()
+
+        # Calculate extent in units for the shifted widefield image and VFS map
+        img_h, img_w = self.VFS_shifted.shape
+        img_w_units = self.pixels_to_units(img_w, scope='widefield')
+        img_h_units = self.pixels_to_units(img_h, scope='widefield')
+        extent_units = [
+            -img_w_units / 2, img_w_units / 2,
+            img_h_units / 2, -img_h_units / 2  # origin='upper'
+        ]
+
+        # Plot VFS_shifted on top of the window (output of plot_window)
+        fig, window_ax = self.plot_window()
+
+        # Overlay VFS_shifted with some transparency
+        im = window_ax.imshow(
+            np.rot90(self.VFS_shifted, 2),
+            cmap='jet',
+            extent=extent_units,
+            origin='upper',
+            alpha=0.4
+        )
+
+        # --- Improved lasso/area drawing logic ---
+        current_area_idx = [0]
+        areas_verts = {}
+        patches_dict = {}
+
+        def draw_all_patches():
+            for i, (area_name, area_verts) in enumerate(areas_verts.items()):
+                color = f"C{i%10}"
+                patch = Polygon(area_verts, closed=True, facecolor='none', edgecolor=color, linewidth=3, label=area_name)
+                window_ax.add_patch(patch)
+                patches_dict[area_name] = patch
+            # Remove duplicate legends
+            handles, labels = window_ax.get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            window_ax.legend(by_label.values(), by_label.keys(), loc='upper right')
+            fig.canvas.draw_idle()
+
+        def onselect(verts):
+            area = self.area_names[current_area_idx[0]]
+            areas_verts[area] = list(verts)
+            draw_all_patches()
+            # Move to next area if not done
+            if current_area_idx[0] < len(self.area_names) - 1:
+                current_area_idx[0] += 1
+                print(f"Draw lasso for: {self.area_names[current_area_idx[0]]}")
+                # Update the title to instruct the user
+                window_ax.set_title(self.area_names[current_area_idx[0]])
+            else:
+                print("All areas drawn. Close the figure window to continue.")
+                window_ax.set_title("All areas drawn. Close the figure window to continue.")
+            fig.canvas.draw_idle()
+
+        # Set initial title with instruction
+        window_ax.set_title(
+            f"All Images on Figure Canvas (units)\nDraw lasso for: {self.area_names[0]}"
+        )
+
+        print(f"Draw lasso for: {self.area_names[0]}")
+        lasso = LassoSelector(window_ax, onselect, props=dict(color='black', linewidth=3))
+
+        # If any areas already have verts (e.g., from a previous run), show them
+        if areas_verts:
+            draw_all_patches()
+
+        plt.show()
+
+        return areas_verts
+    
+    def plot_areas(self):
+
+        fig, ax = self.plot_window()
+
+        for i, (area_name, area_verts) in enumerate(self.areas_verts.items()):
+            color = f"C{i%10}"
+            patch = Polygon(area_verts, closed=True, facecolor='none', edgecolor=color, linewidth=3, label=area_name)
+            ax.add_patch(patch)
+
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='upper right')
+
+        return fig, ax
+    
+    def is_inside_boundary(self, x, y, area_name):
+
+        path = Path(self.areas_verts[area_name])
+        return path.contains_point((x, y))
+    
+    def assign_area_to_cells(self):
+
+        area = []
+        for _, row in self.radial_sessions.iterrows():
+            x_units, y_units = row['coords']
+            for area_name in self.areas_verts.keys():
+                if self.is_inside_boundary(x_units, y_units, area_name):
+                    area.append(area_name)
+                    break
+            else:
+                area.append('None')
+        df = self.radial_sessions.copy()
+        df.insert(1, 'area', area)
+        self.radial_sessions = df
+
+    def plot_areas_with_cells(self, areas_to_plot=['PM'], modality='binocular', color_by='distance'):
+
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=100)
+
+        # # Calculate extent in units for the shifted widefield image and VFS map
+        # img_h, img_w = self.widefield_img_shifted.shape
+        # img_w_units = self.pixels_to_units(img_w, scope='widefield')
+        # img_h_units = self.pixels_to_units(img_h, scope='widefield')
+        # extent_units = [
+        #     -img_w_units / 2, img_w_units / 2,
+        #     img_h_units / 2, -img_h_units / 2  # origin='upper'
+        # ]
+
+        # # Overlay VFS_shifted with some transparency
+        # im = ax.imshow(
+        #     np.rot90(self.widefield_img_shifted, 2),
+        #     cmap='gray',
+        #     extent=extent_units,
+        #     origin='upper',
+        #     alpha=0.7
+        # )
+
+        fig, ax = self.plot_window()
+
+        colors = setup_plot_style()
+        if modality == 'binocular':
+            rows = self.radial_sessions[self.radial_sessions['binocular_modulated'] == True]
+        elif modality == 'monocular':
+            rows = self.radial_sessions[self.radial_sessions['monocular_modulated'] == True]
+        elif modality == 'all':
+            rows = self.radial_sessions[self.radial_sessions['is_responsive'] == True]
+
+        for _, row in rows.iterrows():
+            x_units, y_units = row['coords']
+
+            for area_name in areas_to_plot:
+                inside = self.is_inside_boundary(x_units, y_units, area_name)
+
+                if inside:
+                    # Color by preferred distance
+                    if color_by == 'distance':
+                        distance = row[modality + '_distance']
+                        ax.scatter(x_units, y_units, c=colors[distance], s=5)
+                    elif color_by == 'rf':
+                        ax.scatter(x_units, y_units, c=row['binocular_rf'], cmap='viridis', vmin=-30, vmax=75, s=5)
+
+        for i, area_name in enumerate(areas_to_plot):
+            color = f"C{i%10}"
+            patch = Polygon(self.areas_verts[area_name], closed=True, facecolor='none', edgecolor=color, linewidth=3, label=area_name)
+            ax.add_patch(patch)
+
+        ax.axis('off')
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        ax.set_title('')
+
+        return fig, ax
+    
+    def plot_percetange_of_cells_in_areas(self):
+        """
+        Plots a bar plot showing the percentage of cells in each area that are:
+        - binocular
+        - monocular
+        - both (binocular and monocular modulated)
+        (non-modulated cells are excluded)
+        """
+
+        # Get all area names
+        area_names = list(self.areas_verts.keys())
+        categories = ['binocular', 'monocular', 'both']
+
+        # Prepare a matrix: rows=areas, cols=categories
+        percentages = np.zeros((len(area_names), len(categories)))
+
+        # For each area, count cells in each category
+        for i, area in enumerate(area_names):
+            # Get all cells inside this area
+            inside_mask = self.radial_sessions.apply(
+                lambda row: self.is_inside_boundary(row['coords'][0], row['coords'][1], area), axis=1
+            )
+            area_cells = self.radial_sessions[inside_mask]
+
+            # Only consider modulated cells (binocular or monocular)
+            modulated_mask = (area_cells['binocular_modulated'] == True) | (area_cells['monocular_modulated'] == True)
+            modulated_cells = area_cells[modulated_mask]
+
+            # Boolean masks for each category
+            binocular = modulated_cells['binocular_modulated'] == True
+            monocular = modulated_cells['monocular_modulated'] == True
+
+            both = binocular & monocular
+            only_binocular = binocular & ~monocular
+            only_monocular = monocular & ~binocular
+
+            # n_total is now the number of all responsive cells in the area
+            responsive_mask = (area_cells['is_responsive'] == True)
+            n_total = responsive_mask.sum()
+            if n_total == 0:
+                percentages[i, 0] = np.nan
+            else:
+                percentages[i, 0] = only_binocular.sum() / n_total * 100
+                percentages[i, 1] = only_monocular.sum() / n_total * 100
+                percentages[i, 2] = both.sum() / n_total * 100
+
+        # Plotting
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bar_width = 0.25
+        x = np.arange(len(area_names))
+
+        colors = ['royalblue', 'tomato', 'purple']
+        for j, cat in enumerate(categories):
+            ax.bar(x + j*bar_width, percentages[:, j], width=bar_width, label=cat, color=colors[j])
+
+        ax.set_xticks(x + bar_width)
+        ax.set_xticklabels(area_names, rotation=45, ha='right')
+        ax.set_ylabel('Percentage of cells (%)')
+        ax.set_title('Percentage of modulated cells in each area by modulation type')
+        ax.legend(title='Modulation')
+        ax.set_ylim(0, 20)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_preferred_distance_in_areas(self, modality='binocular'):
+
+        # Get all area names
+        area_names = list(self.areas_verts.keys())
+        # 4 categories for binocular modulated cells by preferred distance
+        distance_categories = [0, 1, 2, 3]
+        colors = setup_plot_style()
+        category_labels = [f'dist {d}' for d in distance_categories]
+
+        # Prepare a matrix: rows=areas, cols=distance categories
+        percentages = np.zeros((len(area_names), len(distance_categories)))
+
+        # For each area, count binocular modulated cells in each distance category
+        for i, area in enumerate(area_names):
+            # Get all cells inside this area
+            inside_mask = self.radial_sessions.apply(
+                lambda row: self.is_inside_boundary(row['coords'][0], row['coords'][1], area), axis=1
+            )
+            area_cells = self.radial_sessions[inside_mask]
+
+            # Only consider binocular modulated cells
+            if modality == 'binocular':
+                binocular_cells = area_cells[(area_cells['is_responsive'] == True) & (area_cells['binocular_modulated'] == True) & (area_cells['monocular_modulated'] == False)]
+            elif modality == 'monocular':
+                binocular_cells = area_cells[(area_cells['is_responsive'] == True) & (area_cells['monocular_modulated'] == True) & (area_cells['binocular_modulated'] == False)]
+            elif modality == 'none':
+                binocular_cells = area_cells[(area_cells['is_responsive'] == True) & (area_cells['binocular_modulated'] == False) & (area_cells['monocular_modulated'] == False)]
+
+            # Only consider responsive cells
+            responsive_mask = (binocular_cells['is_responsive'] == True)
+            responsive_binocular_cells = binocular_cells[responsive_mask]
+
+            n_total = len(responsive_binocular_cells)
+            if n_total == 0:
+                percentages[i, :] = np.nan
+            else:
+                # Count for each preferred distance
+                for j, d in enumerate(distance_categories):
+                    n_in_cat = (responsive_binocular_cells['binocular_distance'] == d).sum()
+                    percentages[i, j] = n_in_cat / n_total * 100
+
+        # Plotting
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bar_width = 0.18
+        x = np.arange(len(area_names))
+
+        for j, label in enumerate(category_labels):
+            ax.bar(x + j*bar_width, percentages[:, j], width=bar_width, label=label, color=colors[j])
+
+        ax.set_xticks(x + 1.5*bar_width)
+        ax.set_xticklabels(area_names, rotation=45, ha='right')
+        ax.set_ylabel(f'Percentage of {modality} modulated cells (%)')
+        ax.set_title(f'Percentage of {modality} modulated cells in each area by preferred distance')
+        ax.legend(title='Preferred Distance')
+        ax.set_ylim(0, 100)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_cells(self, modality='binocular'):
+
+        if modality == 'binocular':
+            rows = self.radial_sessions[(self.radial_sessions['is_responsive'] == True) & (self.radial_sessions['binocular_modulated'] == True)]
+        elif modality == 'monocular':
+            rows = self.radial_sessions[(self.radial_sessions['is_responsive'] == True) & (self.radial_sessions['monocular_modulated'] == True)]
+        elif modality == 'none':
+            rows = self.radial_sessions[(self.radial_sessions['is_responsive'] == True) & (self.radial_sessions['monocular_modulated'] == False) & (self.radial_sessions['binocular_modulated'] == False)]
+
+        figure_dir = os.path.join(self.animal_dir, 'figures', modality )
+        for name in self.session_names:
+
+            suite2p_dir = self.get_suite2p_dir(self.session_names[name])
+            with open(os.path.join(suite2p_dir, f'{self.session_names[name]}_summ.pkl'), 'rb') as f:
+                summ = pickle.load(f)
+
+            session_cells = rows[rows['session'] == name]
+            for cell in session_cells['cell_id']:
+                print(f'Session: {name} - Cell: {cell}', end='\r', flush=True)
+                fig = summ.radial_plots.plot_all_traces_colormap_distances(cell, method='regression')
+                fig.savefig(os.path.join(figure_dir, f'{name}_{cell}.png'))
+                plt.close()
+

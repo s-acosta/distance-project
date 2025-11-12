@@ -12,3 +12,4 @@ linear-notebooks/distance_comparison_plots/cell_213_distance_comparison.png
 /.venv
 *.mp4
 *.avi
+/hardware-control/disparity-device/stimulus

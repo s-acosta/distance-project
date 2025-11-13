@@ -167,7 +167,7 @@ void setup() {
   servos.setServoConfig(0, 12, 400, 180);
   servos.setServoConfig(1,  8, 400, 180);
   servos.setServoConfig(2,  4, 400, 180);
-  servos.setServoConfig(3,  0, 400, 180);
+  servos.setServoConfig(3,  0, 420, 180);
   servos.begin();
   
   Serial.println("<Arduino is ready>");

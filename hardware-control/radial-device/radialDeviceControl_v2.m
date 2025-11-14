@@ -38,7 +38,7 @@ end
 %% Initialize DAQ
 if options.DAQ_flag
     DAQ = daq('ni');
-    DAQ.addoutput('Dev1', 'ao1', 'Voltage');
+    DAQ.addoutput('Dev1', 'ao0', 'Voltage');
     DAQ.write(0);
     fprintf('DAQ initialized\n');
 end
@@ -243,6 +243,7 @@ fprintf('Total time: %.2f seconds\n', toc);
 
 % Package data
 stim_data = options;
+stim_data.distance_sequence = distance_vec;
 stim_data.off_start = off_start;
 stim_data.on_start = on_start;
 stim_data.on_end = on_end;

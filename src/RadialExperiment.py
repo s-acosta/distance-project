@@ -27,13 +27,59 @@ from matplotlib.path import Path
 
 class RadialDevice:
 
-    def __init__(self, session_path, response_mode='dFF', tau=None):
+    def __init__(self, data_dir=None, response_mode='spikes', tau=None,
+                 mouse_name=None, record_date=None, experiment_name=None,
+                 base_data_dir=r'D:/data-distance-coding-project/processed-data'):
+        """
+        Initialize RadialDevice.
+        
+        Can be called two ways:
+        1. Direct path: RadialDevice(data_dir='path/to/data')
+        2. Session info: RadialDevice(mouse_name='SAM041', record_date='251120', 
+                                      experiment_name='tiling_4_120um')
+        
+        Parameters:
+        -----------
+        data_dir : str, optional
+            Direct path to data directory
+        response_mode : str
+            'spikes' or other response mode
+        mouse_name : str, optional
+            Mouse identifier (e.g., 'SAM041')
+        record_date : str, optional
+            Recording date (e.g., '251120')
+        experiment_name : str, optional
+            Experiment name (e.g., 'tiling_4_120um')
+        base_data_dir : str
+            Base directory for processed data (only used with session info)
+        """
+        
+        # Build data_dir from session info if provided
+        if data_dir is None and all([mouse_name, record_date, experiment_name]):
+            self.mouse_name = mouse_name
+            self.record_date = record_date
+            self.experiment_name = experiment_name
+            self.session_name = f'{record_date}_{mouse_name}_{experiment_name}'
+            data_dir = os.path.join(base_data_dir, self.session_name)
+            print(f"✓ Loading session: {self.session_name}")
+        elif data_dir is None:
+            raise ValueError(
+                "Must provide either:\n"
+                "  - data_dir, OR\n"
+                "  - mouse_name, record_date, and experiment_name"
+            )
+        
+        # Verify directory exists
+        if not os.path.exists(data_dir):
+            raise FileNotFoundError(f"Directory does not exist: {data_dir}")
+        
+        self.data_dir = data_dir
+        self.suite2p_dir = os.path.join(data_dir, 'suite2p')
+        self.stimulus_dir = os.path.join(data_dir, 'stimulus')
+        self.results_dir = create_new_result_dir(data_dir, 'results')
 
-        self.session_path = session_path
-        self.results_path = create_new_result_dir(self.session_path, r'results')
-        self.stimulus_path = os.path.join(self.session_path, r'stimulus')
-        self.activity_path = os.path.join(self.session_path, r'suite2p\plane0')
-
+        self.colors = setup_plot_style()
+    
         self.response_mode = response_mode
 
         self._load_activity(tau)
@@ -50,13 +96,12 @@ class RadialDevice:
         else:
             raise Exception('Unknown activity mode')
         
-        self._synchronize_stimulus_and_activity()
         self._set_on_length()
 
     def _load_stimulus_container(self):
         
         # check files inside stimulus_path
-        filelist = [file for file in os.listdir(self.stimulus_path) if file.endswith(("_stimulus.mat"))]
+        filelist = [file for file in os.listdir(self.stimulus_dir) if file.endswith(("_stimulus.mat"))]
         if len(filelist) == 0:
             # raise error
             raise Exception('No stimulus file found')
@@ -64,22 +109,28 @@ class RadialDevice:
             raise Exception('More than one stimulus file found')
         else:
             print('Stimulus file found')
-            return io.loadmat(self.stimulus_path + '/' + str(filelist[0]))
+            return io.loadmat(self.stimulus_dir + '/' + str(filelist[0]))
         
     def _load_stimulus_variables(self):
 
         container = self._load_stimulus_container()
-        locals_dict = import_vars_from_matlab(container, 'stim')
+        locals_dict = import_vars_from_matlab(container, 'distance_stim')
 
-        self.angle = locals_dict['angle']
-        self.time = locals_dict['time']
-        self.angle_limits = [-30, 75]
-        self.distance_sequence = locals_dict['distance_sequence'] - 1 
-        self.off_start_time = locals_dict['off_start']
-        self.trial_start_time = locals_dict['trial_start_time']
-        self.trial_end_time = locals_dict['trial_end_time']
-        self.on_start_time = locals_dict['on_start_time']
-        self.on_end_time = locals_dict['on_end_time']
+        self.distances_showed = locals_dict['distances']
+        self.time_per_trial = locals_dict['time_per_trial']
+        self.n_repeats = locals_dict['n_repeats']
+        self.start_angle = locals_dict['start_angle']
+        self.end_angle = locals_dict['end_angle']
+        self.off_time = locals_dict['off_time']
+        self.raise_time = locals_dict['raise_time']
+        self.lower_time = locals_dict['lower_time']
+        self.forward_speed = locals_dict['forward_speed']
+        self.return_speed = locals_dict['return_speed']
+        self.monocular_sequence = locals_dict['monocular_sequence']
+        self.distance_sequence = locals_dict['distance_sequence']
+        self.off_start = locals_dict['off_start']
+        self.on_start = locals_dict['on_start']
+        self.on_end = locals_dict['on_end']
 
         try:
             self.monocular_sequence = locals_dict['monocular_sequence']
@@ -89,7 +140,7 @@ class RadialDevice:
     def _load_activity(self, tau=None):
 
         try:
-            D = ActivityLoader(self.session_path, tau)
+            D = ActivityLoader(self.data_dir, tau)
             self.frames_time = D.frames_time
             self.dFF = D.dFF
             self.spikes = D.spikes
@@ -98,15 +149,6 @@ class RadialDevice:
         except Exception as e:
             print(f"Error loading activity data: {e}")
             raise
-
-    def _synchronize_stimulus_and_activity(self):
-
-        self.response = self.response[:,self.frames_time <= 1000*self.trial_end_time[-1]]
-        self.time = np.linspace(0, self.trial_end_time[-1]*1000, len(self.angle))
-        self.frames_time = self.frames_time[self.frames_time <= 1000*self.trial_end_time[-1]]
-        self.angle_interp = np.interp(self.frames_time, self.time, self.angle)
-
-        print('Synchronized stimulus and activity')
 
     def _set_on_length(self):
 
@@ -130,7 +172,7 @@ class RadialDevice:
         # set the on length to the shortest length
         self.on_length = min(frame_counts.keys())
         print(f'Set stimulus on length: {self.on_length}')
-        self.angle_range = np.linspace(self.angle_limits[0], self.angle_limits[-1], self.on_length)
+        self.angle_range = np.linspace(self.start_angle, self.end_angle, int(self.on_length))
 
     def get_on_times(self, repeat):
         """
@@ -149,8 +191,8 @@ class RadialDevice:
             - on_end: timestamp (ms) when the stimulus presentation ends, including any hold time
         """
 
-        on_start = 1000*self.on_start_time[repeat] 
-        on_end = 1000*self.on_end_time[repeat]
+        on_start = 1000*self.on_start[repeat] 
+        on_end = 1000*self.on_end[repeat]
 
         return on_start, on_end
 
@@ -182,11 +224,7 @@ class RadialDevice:
             distance_indices = np.arange(len(self.distance_sequence))
             distance_indices = np.setdiff1d(distance_indices, control_indices)
 
-        # do intersection
-        repeat_indices = np.intersect1d(monocular_indices, distance_indices)
-
-        # get the intersection of the indices
-        return repeat_indices
+        return  np.intersect1d(monocular_indices, distance_indices)
     
     def get_all_traces(self, cell, distance=None, monocular=None, mean_trace=False):
 
@@ -287,7 +325,6 @@ class RadialDevice:
             corr_shifted.append(scipy.stats.pearsonr(first_half_shifted_mean, second_half_shifted_mean)[0])
 
         return corr, corr_shifted
-
 
     def analyze_cell_reliability(self, cell, n_iterations=100, reliable_threshold = 0.85, distance=None, monocular=None):
         """
@@ -701,16 +738,21 @@ class RadialPlots:
         distances_without_control = [0, 1, 2, 3]
 
         # Create figure with a row for each condition, 5 columns per row (add one for stats text)
-        fig, axs = plt.subplots(2, 5, figsize=(18, 8), 
+        fig, axs = plt.subplots(2, 5, figsize=(22, 8), 
                                gridspec_kw={'width_ratios': [1, 1, 1, 1, 1.2]})
         # remove axis ticks from second subplot
         axs[0, 1].remove()
         axs[1, 1].remove()
+
+        # Adjust spacing between columns
+        plt.subplots_adjust(wspace=0.4, hspace=0.3)
         
         conditions = [
             {'monocular': True,  'title': 'Monocular'},
             {'monocular': False, 'title': 'Binocular'},
         ]
+
+
        
         all_traces = self.R.get_all_traces(cell, distance=None, monocular=None, mean_trace=False)
         vmin, vmax = np.percentile(all_traces, [1, 99])
@@ -737,7 +779,7 @@ class RadialPlots:
                                   label=f'Distance {dist}', 
                                   linewidth=3)
                 axs[c_idx, 2].fill_between(
-                    self.R.angle_range, 
+                    self.R.angle_range.flatten(), 
                     repeats_distance_mean - repeats_distance_sem, 
                     repeats_distance_mean + repeats_distance_sem, 
                     color=self.colors[dist], alpha=0.2
@@ -816,7 +858,7 @@ class RadialPlots:
             stats_lines.append(f"Control reliable: {control_responsive}")
             stats_lines.append(f"Control higher: {control_higher}")
             stats_lines.append(f"Modulated: {p_value < 0.05}")
-            stats_lines.append(f"RF position: {rf_position:.2f}")
+            stats_lines.append(f"RF position: {rf_position[0]:.2f}")
             stats_lines.append(f"Modulation strength: {mod_strength:.3f}")
             stats_lines.append(f"Preferred distance: {pref_distance}")
             stats_lines.append(f"Mean RF values:")
@@ -947,7 +989,7 @@ class RadialSummaries():
     def __init__(self, radial_class, radial_stats, radial_plots):
         self.R = radial_class
         self.radial_stats = radial_stats
-        self.session_name = self.R.session_path.split('/')[-2]
+        self.session_name = self.R.data_dir.split('/')[-2]
         self.colors = setup_plot_style()
         self.radial_plots = radial_plots
 
@@ -998,7 +1040,7 @@ class RadialSummaries():
     
     def plot_single_cells(self):
 
-        results_dir = os.path.join(self.R.session_path, 'results')
+        results_dir = os.path.join(self.R.data_dir, 'results')
 
         for condition in self.modulated_cells.keys():
             print(f'Plotting {condition} cells')
@@ -1382,8 +1424,8 @@ class RadialSummaries():
         cells_to_plot = self.R.suite2p_id
 
         # Load Suite2p outputs
-        stat = np.load(self.R.activity_path + r'\stat.npy', allow_pickle=True)
-        ops = np.load(self.R.activity_path + r'\ops.npy', allow_pickle=True).item()
+        stat = np.load(os.path.join(self.R.suite2p_dir, 'plane0/stat.npy'), allow_pickle=True)
+        ops = np.load(os.path.join(self.R.suite2p_dir, 'plane0/ops.npy'), allow_pickle=True).item()
 
         # Background image setup
         mean_img = ops['meanImg']
@@ -1527,8 +1569,8 @@ class RadialSummaries():
             idx_condition = 0
 
         # Load Suite2p outputs
-        stat = np.load(self.R.activity_path + r'\stat.npy', allow_pickle=True)
-        ops = np.load(self.R.activity_path + r'\ops.npy', allow_pickle=True).item()
+        stat = np.load(os.path.join(self.R.suite2p_dir, 'plane0/stat.npy'), allow_pickle=True)
+        ops = np.load(os.path.join(self.R.suite2p_dir, 'plane0/ops.npy'), allow_pickle=True).item()
 
         # Background image setup
         mean_img = ops['meanImg']

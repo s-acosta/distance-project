@@ -487,12 +487,13 @@ class RadialDevice:
             print(f'Analyzing cell {cell} of {self.suite2p_id[-1]}', end='\r', flush=True)
 
             rf = self.find_rf_position(cell, distance=None, monocular=None)
+            pref_distance = self.analyze_cell_modulation(cell, distance=None, monocular=None, method=method)[1]
             
             # Analyze condition
             is_responsive, visually_responsive, control_responsive, control_higher, mean_corr = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)
 
             p_value_monocular, pref_distance_monocular, mod_strength_monocular = self.analyze_cell_modulation(cell, monocular=True, method=method)
-            rf_position_monocular = self.find_rf_position(cell, distance=None, monocular=True)
+            rf_position_monocular = self.find_rf_position(cell, distance=None, monocular=True) 
             
             p_value_binocular, pref_distance_binocular, mod_strength_binocular = self.analyze_cell_modulation(cell, monocular=False, method=method)
             rf_position_binocular = self.find_rf_position(cell, distance=None, monocular=False)
@@ -503,6 +504,7 @@ class RadialDevice:
             cell_row = {
                 'cell_id': cell,
                 'rf': rf,
+                'distance': pref_distance,
                 'responsive': is_responsive,
                 'responsive_corr': mean_corr,
                 'responsive_visually': visually_responsive,
@@ -1019,9 +1021,14 @@ class RadialSummaries():
         self.responsive_cells = self.find_responsive_cells()
         self.modulated_cells = self.find_modulated_cells()
 
-    def find_responsive_cells(self):
+    def find_responsive_cells(self, correlation_threshold=0.8):
 
-        responsive_cells = self.radial_stats[self.radial_stats['responsive'] == True]['cell_id'].values
+        responsive_cells = self.radial_stats[
+            (self.radial_stats['responsive_corr'] >= correlation_threshold) &
+            (self.radial_stats['responsive_visually'] == True) &
+            (self.radial_stats['responsive_control'] == False) &
+            (self.radial_stats['responsive_control_higher'] == False)
+        ]['cell_id'].values
 
         return responsive_cells
 
@@ -1245,120 +1252,90 @@ class RadialSummaries():
 
         return fig
 
-    def plot_preferred_distance_bars(self):
+    def plot_preferred_distance_bars(self, condition=None):
 
-        # plot a barplot of the preferred distance distribution for each condition
-        # check number of conditions and make figure accordingly
-        n_conditions = len(self.modulated_cells.keys())
-        fig, ax = plt.subplots(figsize=(2*n_conditions, 5))
+        fig, ax = plt.subplots(figsize=(4, 5))
 
-        # Prepare data for barplot
-        # Get preferred distances for each condition
+        modulated_cells = self.modulated_cells[condition]
+
+        if condition is None:
+            all_pref_distances = self.radial_stats[self.radial_stats['cell_id'].isin(modulated_cells)]['distance'].values
+        else:
+            all_pref_distances = self.radial_stats[self.radial_stats['cell_id'].isin(modulated_cells)][condition + '_distance'].values
+
         distances = [0, 1, 2, 3]
-        conditions = list(self.modulated_cells.keys())
-        
-        # Initialize lists to store data
-        all_pref_distances = []
-        
-        # Process each condition from modulated_cells
-        for stat in self.radial_stats:
+        counts = [sum(all_pref_distances == d) for d in distances]
 
-            for condition in conditions:
-                cells_pref_distances = []
-                for cell in self.modulated_cells[condition]:
-                    pref_distance = stat.loc[stat['cell_id'] == cell, 'pref_distance'].values[0]
-                    cells_pref_distances.append(pref_distance)
-                
-                all_pref_distances.append(np.array(cells_pref_distances))
-            
-        
-        # Count cells for each distance in each condition
-        counts_by_distance = []
-        for pref_distances in all_pref_distances:
-            counts = [sum(pref_distances == d) for d in distances]
-            counts_by_distance.append(counts)
-        
-        # Set width of bars
-        bar_width = 0.2
-        r1 = np.arange(len(conditions))
-        r2 = [x + bar_width for x in r1]
-        r3 = [x + bar_width for x in r2]
-        r4 = [x + bar_width for x in r3]
-        
-        # Create grouped bar plot
-        for i, distance in enumerate(distances):
-            position = [r1, r2, r3, r4][i]
-            counts = [counts_by_distance[j][i] for j in range(len(conditions))]
-            ax.bar(position, counts, width=bar_width, color=self.colors[i], 
-                    edgecolor='black', label=f'Distance {distance}')
-        
-        # Add labels and title
-        ax.set_ylabel('Number of Cells')
-        ax.set_xlabel('Condition')
-        ax.set_xticklabels(conditions, fontsize=12)
-        fig.suptitle('Preferred Distance by Condition', fontsize=18, color='black', y=0.94)
-        ax.set_title(self.session_name, fontsize=14, color='grey', pad=2)
-        ax.set_xticks([r + 1.5 * bar_width for r in range(len(conditions))])
-        ax.legend()
-        
-        # Add cell counts as text above each bar
-        for i, distance in enumerate(distances):
-            position = [r1, r2, r3, r4][i]
-            counts = [counts_by_distance[j][i] for j in range(len(conditions))]
-            for j, count in enumerate(counts):
-                if count > 0:
-                    ax.text(position[j], count + 0.3, f'{count}', ha='center', va='bottom', fontsize=9)
-        
-        # Add grid for better readability
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-        
+        # Calculate percentage of reliable cells
+        total_reliable = len(self.responsive_cells)
+        percentages = [(count / total_reliable) * 100 for count in counts]
+
+        ax.bar(distances, percentages, width=0.8, color=self.colors, edgecolor='black')
+
+        # Add raw counts on top of bars
+        for i, (distance, percentage, count) in enumerate(zip(distances, percentages, counts)):
+            ax.text(distance, percentage, str(count), ha='center', va='bottom', fontsize=12)
+
+        ax.set_ylabel('Percentage of Reliable Cells (%)')
+        ax.set_xlabel('Preferred Distance')
+        ax.set_xticks(distances)
+        ax.set_xticklabels(distances)
+        ax.set_ylim(0, max(percentages) * 1.2)
         plt.tight_layout()
 
         return fig
     
-    def plot_preferred_distance_polar(self):
+    def plot_preferred_distance_polar(self, condition='binocular'):
+
 
         fig = plt.figure(figsize=(8, 5))
         ax = fig.add_subplot(1, 1, 1, polar=True)
+        ax.set_theta_zero_location('N')
+        # Add gray background for central region (-25 to 25 degrees)
+        ax.axvspan(np.radians(-25), np.radians(25), alpha=0.5, color='gray', zorder=0)
+        # Add colored y-spans for distance ranges
+        distance_colors = self.colors
+        for dist in range(1, 5):
+            ax.axhspan(dist - 0.30, dist + 0.30, alpha=0.4, color=distance_colors[dist-1], zorder=0)
+
+        if condition is None:
+            cells_to_plot = self.responsive_cells
+        else:
+            cells_to_plot = self.modulated_cells[condition]
 
         # Plot preferred distance and angle for each condition
-        condition_colors = {
-            'binocular': 'lightgreen',
-            'monocular': 'coral'
-        }
-        for i, (cond, color) in enumerate(condition_colors.items()):
-            if cond in self.modulated_cells:
-                mod_cells = self.modulated_cells[cond]
-                pref_distances = []
-                pref_angles = []
-                # Find the corresponding stat_df for this condition
-                stat_df = None
-                for df in self.radial_stats:
-                    if not df.empty and df['condition'].iloc[0] == cond:
-                        stat_df = df
-                        break
-                if stat_df is not None:
-                    for cell in mod_cells:
-                        row = stat_df[stat_df['cell_id'] == cell]
-                        if not row.empty:
-                            noisy_distance = row['pref_distance'].values[0] + np.random.uniform(-0.2, 0.2)
-                            pref_distances.append(noisy_distance + 1)
-                            pref_angles.append(row['rf_position'].values[0])
-                    theta = np.radians(pref_angles)
-                    ax.scatter(theta, pref_distances, c=color, s=40, edgecolor='k', alpha=0.9, label=cond.capitalize())
+        pref_distances = []
+        pref_angles = []
+        for cell in cells_to_plot:
+            if condition is None:
+                pref_distance = self.pullout_stat(cell_id=cell, condition='binocular', stat_type='pref_distance')
+                pref_angle = self.pullout_stat(cell_id=cell, condition='binocular', stat_type='pref_angle')
+            else:
+                pref_distance = self.pullout_stat(cell_id=cell, condition=condition, stat_type='pref_distance')
+                pref_angle = self.pullout_stat(cell_id=cell, condition=condition, stat_type='pref_angle')
+            
+            pref_distances.append(pref_distance)
+            pref_angles.append(pref_angle)
 
-        ax.set_theta_zero_location('N')
+        theta = np.radians(pref_angles)
+        pref_distances = np.array(pref_distances) + np.random.randn(len(pref_distances)) * 0.1 + 1
+        sc = ax.scatter(theta, pref_distances, c=pref_angles, cmap='viridis', vmin=-30, vmax=60, s=60, edgecolor='k', alpha=0.8)
+
+        ax.grid(False)
         ax.set_theta_direction(-1)
         ax.set_thetamin(-30)
-        ax.set_thetamax(75)
-        fig.suptitle('Modulation by Preferred Angle', fontsize=18, color='black', y=0.94)
-        ax.set_title(self.session_name, fontsize=14, color='grey', pad=2)
+        ax.set_thetamax(65)
         ax.set_ylabel('Preferred Distance')
+        ax.set_yticks([])
+        # title will be condition
+        if condition is None:
+            ax.set_title('Responsive Cells', fontsize=18, color='black', pad=2)
+        else:
+            ax.set_title(condition.capitalize(), fontsize=18, color='black', pad=2)
+
         ax.legend()
 
         plt.tight_layout()
-
-        return fig
     
     def plot_preferred_distance_polar_density(self):
         """
@@ -1467,7 +1444,7 @@ class RadialSummaries():
                 sc = ax.scatter(
                     xpix, ypix,
                     c='lightgray',
-                    s=150, alpha=0.8,
+                    s=120, alpha=0.8,
                     edgecolor='black', linewidth=1
                 )
             else:
@@ -1477,8 +1454,8 @@ class RadialSummaries():
                     c=rf_location,
                     cmap='viridis',
                     vmin=-30,
-                    vmax=75,
-                    s=150, alpha=1,
+                    vmax=60,
+                    s=120, alpha=1,
                     edgecolor='black', linewidth=1
                 )
 
@@ -1625,11 +1602,14 @@ class RadialSummaries():
             ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
             xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
 
-            pref_distance = self.pullout_stat(cell_id=cell_id, condition=condition, stat_type='pref_distance')
+            rf_location = self.pullout_stat(cell_id=cell_id, condition=condition, stat_type='pref_angle')
 
             ax.scatter(
                 xpix, ypix,
-                c=self.colors[pref_distance],
+                c=rf_location,
+                cmap='viridis',
+                vmin=-30,
+                vmax=60,
                 s=150, alpha=1,
                 edgecolor='black', linewidth=1
             )

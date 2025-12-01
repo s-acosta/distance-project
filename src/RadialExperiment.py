@@ -256,7 +256,7 @@ class RadialDevice:
         
     def find_rf_values(self, cell, distance=None, monocular=None):
 
-        rf_position = self.find_rf_position(cell, distance=distance, monocular=monocular)
+        rf_position = self.find_rf_position(cell, distance=None, monocular=monocular)
         rf_idx = np.where(self.angle_range == rf_position)[0][0]
         
         window_size = 5
@@ -407,6 +407,21 @@ class RadialDevice:
         modulation_strength = (np.abs(preferred_mean) - np.abs(least_preferred_mean)) / (np.abs(preferred_mean) + np.abs(least_preferred_mean) + 1e-10)  # Avoid division by zero
 
         return p_value, preferred_distance, modulation_strength
+
+    def analyze_ocular_dominance(self, cell):
+
+        monocular_mean = self.get_all_traces(cell, distance=None, monocular=True, mean_trace=True)[0]
+        binocular_mean = self.get_all_traces(cell, distance=None, monocular=False, mean_trace=True)[0]
+
+        receptive_field_position = self.find_rf_position(cell, distance=None, monocular=None)
+        receptive_field_position_index = np.where(self.angle_range == receptive_field_position)[0][0]
+    
+        monocular_mean_rf = monocular_mean[int(receptive_field_position_index)]
+        binocular_mean_rf = binocular_mean[int(receptive_field_position_index)]
+
+        ocular_dominance_index = (binocular_mean_rf - monocular_mean_rf) / (binocular_mean_rf + monocular_mean_rf + 1e-10)
+
+        return ocular_dominance_index
     
     def analyze_condition_stats(self, monocular=None, method='ANOVA'):
         
@@ -481,12 +496,15 @@ class RadialDevice:
             
             p_value_binocular, pref_distance_binocular, mod_strength_binocular = self.analyze_cell_modulation(cell, monocular=False, method=method)
             rf_position_binocular = self.find_rf_position(cell, distance=None, monocular=False)
+
+            ocular_dominance_index = self.analyze_ocular_dominance(cell)
             
             # Create a row for this cell
             cell_row = {
                 'cell_id': cell,
                 'is_responsive': is_responsive,
                 'rf': rf,
+                'ocular_dominance_index': ocular_dominance_index,
                 'monocular_modulated': np.bool(p_value_monocular < 0.05),
                 'monocular_modulated_p': p_value_monocular,
                 'monocular_strength': mod_strength_monocular,
@@ -857,7 +875,7 @@ class RadialPlots:
             stats_lines.append(f"Visually reliable: {visually_responsive}")
             stats_lines.append(f"Control reliable: {control_responsive}")
             stats_lines.append(f"Control higher: {control_higher}")
-            stats_lines.append(f"Modulated: {p_value < 0.05}")
+            stats_lines.append(f"Modulated: {np.bool((p_value < 0.05) and visually_responsive)}")
             stats_lines.append(f"RF position: {rf_position[0]:.2f}")
             stats_lines.append(f"Modulation strength: {mod_strength:.3f}")
             stats_lines.append(f"Preferred distance: {pref_distance}")
@@ -1047,7 +1065,7 @@ class RadialSummaries():
             figure_directory = create_new_result_dir(results_dir, f'{condition}')
             for cell in self.modulated_cells[condition]:
                 print(f'Plotting cell {cell}', end='\r', flush=True)
-                fig = self.radial_plots.plot_all_traces_colormap_distances(cell=cell, method='regression')
+                fig = self.radial_plots.plot_all_traces_colormap_distances(cell=cell, method='ANOVA')
                 fig.savefig(os.path.join(figure_directory, f'{cell}.png'))
                 plt.close(fig)
 

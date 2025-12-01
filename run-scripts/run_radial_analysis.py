@@ -107,7 +107,7 @@ Examples:
     print(f"Found {sum(len(cells) for cells in summ.modulated_cells.values())} total modulated cells")
     
     # Save summ object as pickle
-    summ_file = os.path.join(D.data_dir, 'radial_summaries.pkl')
+    summ_file = os.path.join(D.data_dir, f'{args.date}_{args.mouse}_{args.experiment}_summaries.pkl')
     import pickle
     with open(summ_file, 'wb') as f:
         pickle.dump(summ, f)

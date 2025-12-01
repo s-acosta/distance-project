@@ -356,7 +356,7 @@ class RadialDevice:
 
         is_reliable = visually_responsive and not (control_responsive or control_higher) and np.mean(corr) > reliable_threshold
 
-        return is_reliable, visually_responsive, control_responsive, control_higher
+        return is_reliable, visually_responsive, control_responsive, control_higher, np.mean(corr)
     
     def test_linear_trend_rf(self, cell, distances=[0, 1, 2, 3], monocular=None):
 
@@ -489,7 +489,7 @@ class RadialDevice:
             rf = self.find_rf_position(cell, distance=None, monocular=None)
             
             # Analyze condition
-            is_responsive = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)[0]
+            is_responsive, visually_responsive, control_responsive, control_higher, mean_corr = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)
 
             p_value_monocular, pref_distance_monocular, mod_strength_monocular = self.analyze_cell_modulation(cell, monocular=True, method=method)
             rf_position_monocular = self.find_rf_position(cell, distance=None, monocular=True)
@@ -502,8 +502,13 @@ class RadialDevice:
             # Create a row for this cell
             cell_row = {
                 'cell_id': cell,
-                'is_responsive': is_responsive,
                 'rf': rf,
+                'responsive': is_responsive,
+                'responsive_corr': mean_corr,
+                'responsive_visually': visually_responsive,
+                'responsive_control': control_responsive,
+                'responsive_control_higher': control_higher,
+                'responsive_mean_corr': mean_corr,
                 'ocular_dominance_index': ocular_dominance_index,
                 'monocular_modulated': np.bool(p_value_monocular < 0.05),
                 'monocular_modulated_p': p_value_monocular,
@@ -524,15 +529,15 @@ class RadialDevice:
         
         # Calculate summary statistics
         n_cells = len(stats_df)
-        n_responsive = stats_df['is_responsive'].sum()
-        n_monocular_modulated = stats_df['monocular_modulated'].sum()
-        n_binocular_modulated = stats_df['binocular_modulated'].sum()
+        n_responsive = stats_df['responsive'].sum()
+        # n_monocular_modulated = stats_df['monocular_modulated'].sum()
+        # n_binocular_modulated = stats_df['binocular_modulated'].sum()
 
         # Print summary statistics
         print(f"Total cells: {n_cells}")
         print(f"Responsive cells: {n_responsive} ({n_responsive / n_cells * 100:.1f}%)")
-        print(f"Monocular modulated cells: {n_monocular_modulated} ({n_monocular_modulated / n_responsive * 100:.1f}%)")
-        print(f"Binocular modulated cells: {n_binocular_modulated} ({n_binocular_modulated / n_responsive * 100:.1f}%)")
+        # print(f"Monocular modulated cells: {n_monocular_modulated} ({n_monocular_modulated / n_responsive * 100:.1f}%)")
+        # print(f"Binocular modulated cells: {n_binocular_modulated} ({n_binocular_modulated / n_responsive * 100:.1f}%)")
         
         return stats_df
 
@@ -858,8 +863,8 @@ class RadialPlots:
                 axs[c_idx, 3].scatter(x, rf_vals, alpha=0.8, color=self.colors[i], s=40)
 
             # # Check if p_value is significant and if the cell is responsive for the monocular condition
-            is_reliable,visually_responsive, control_responsive, control_higher = self.R.analyze_cell_reliability(cell, monocular=condition['monocular'])
-            if p_value < 0.05 and visually_responsive:
+            responsive, responsive_visually, responsive_control, responsive_control_higher, responsive_corr = self.R.analyze_cell_reliability(cell, monocular=condition['monocular'])
+            if p_value < 0.05 and responsive_visually:
                 bar_height = vmax * 0.8
                 axs[c_idx, 3].plot([1, len(distances_with_control)], [bar_height, bar_height], 'k-', linewidth=1.5)
                 axs[c_idx, 3].text((1 + len(distances_with_control))/2, bar_height*1.02, '*', ha='center', va='bottom')
@@ -871,11 +876,11 @@ class RadialPlots:
 
             # --- Stats text column ---
             stats_lines = []
-            stats_lines.append(f"Reliable: {is_reliable}")
-            stats_lines.append(f"Visually reliable: {visually_responsive}")
-            stats_lines.append(f"Control reliable: {control_responsive}")
-            stats_lines.append(f"Control higher: {control_higher}")
-            stats_lines.append(f"Modulated: {np.bool((p_value < 0.05) and visually_responsive)}")
+            stats_lines.append(f"Reliable: {responsive}")
+            stats_lines.append(f"Visually reliable: {responsive_visually}")
+            stats_lines.append(f"Control reliable: {responsive_control}")
+            stats_lines.append(f"Control higher: {responsive_control_higher}")
+            stats_lines.append(f"Modulated: {np.bool((p_value < 0.05) and responsive_visually)}")
             stats_lines.append(f"RF position: {rf_position[0]:.2f}")
             stats_lines.append(f"Modulation strength: {mod_strength:.3f}")
             stats_lines.append(f"Preferred distance: {pref_distance}")
@@ -1016,7 +1021,7 @@ class RadialSummaries():
 
     def find_responsive_cells(self):
 
-        responsive_cells = self.radial_stats[self.radial_stats['is_responsive'] == True]['cell_id'].values
+        responsive_cells = self.radial_stats[self.radial_stats['responsive'] == True]['cell_id'].values
 
         return responsive_cells
 
@@ -1081,8 +1086,8 @@ class RadialSummaries():
             return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_modulated'].values[0]
         elif stat_type == 'modulated_p':
             return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, condition + '_modulated_p'].values[0]
-        elif stat_type == 'is_responsive':
-            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, 'is_responsive'].values[0]
+        elif stat_type == 'responsive':
+            return self.radial_stats.loc[self.radial_stats['cell_id'] == cell_id, 'responsive'].values[0]
         else:
             raise ValueError(f"Stat type {stat_type} not found")
         
@@ -1095,7 +1100,7 @@ class RadialSummaries():
         responsive_cells_set = {}
         for i, stat_df in enumerate(self.radial_stats):
             condition_name = stat_df['condition'].iloc[0] if not stat_df.empty else f"condition_{i}"
-            responsive_cells_set[condition_name] = set(stat_df[stat_df['is_reliable'] == True]['cell_id'].values)
+            responsive_cells_set[condition_name] = set(stat_df[stat_df['responsive'] == True]['cell_id'].values)
 
         total_cells = len(self.R.suite2p_id)
         bar_width = 0.75

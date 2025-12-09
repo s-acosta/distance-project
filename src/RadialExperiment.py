@@ -61,7 +61,7 @@ class RadialDevice:
             self.experiment_name = experiment_name
             self.session_name = f'{record_date}_{mouse_name}_{experiment_name}'
             data_dir = os.path.join(base_data_dir, self.session_name)
-            print(f"✓ Loading session: {self.session_name}")
+            print(f"[ok] Loading session: {self.session_name}")
         elif data_dir is None:
             raise ValueError(
                 "Must provide either:\n"
@@ -487,7 +487,7 @@ class RadialDevice:
             print(f'Analyzing cell {cell} of {self.suite2p_id[-1]}', end='\r', flush=True)
 
             rf = self.find_rf_position(cell, distance=None, monocular=None)
-            pref_distance = self.analyze_cell_modulation(cell, distance=None, monocular=None, method=method)[1]
+            pref_distance = self.analyze_cell_modulation(cell, monocular=None, method=method)[1]
             
             # Analyze condition
             is_responsive, visually_responsive, control_responsive, control_higher, mean_corr = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)
@@ -1252,14 +1252,20 @@ class RadialSummaries():
 
         return fig
 
-    def plot_preferred_distance_bars(self, condition=None):
+    def plot_preferred_distance_bars(self, condition=None, ax=None):
 
-        fig, ax = plt.subplots(figsize=(4, 5))
-
-        modulated_cells = self.modulated_cells[condition]
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(4, 5))
+        else:
+            fig = ax.get_figure()
 
         if condition is None:
-            all_pref_distances = self.radial_stats[self.radial_stats['cell_id'].isin(modulated_cells)]['distance'].values
+            modulated_cells = self.responsive_cells
+        else:
+            modulated_cells = self.modulated_cells[condition]
+
+        if condition is None:
+            all_pref_distances = self.radial_stats[self.radial_stats['cell_id'].isin(modulated_cells)]['binocular_distance'].values
         else:
             all_pref_distances = self.radial_stats[self.radial_stats['cell_id'].isin(modulated_cells)][condition + '_distance'].values
 
@@ -1280,16 +1286,25 @@ class RadialSummaries():
         ax.set_xlabel('Preferred Distance')
         ax.set_xticks(distances)
         ax.set_xticklabels(distances)
-        ax.set_ylim(0, max(percentages) * 1.2)
+        
+        if condition is None:
+            ax.set_title('Responsive', fontsize=18, color='black', pad=2)
+            ax.set_ylim(0, max(percentages) * 1.2)
+        else:
+            ax.set_title(condition.capitalize(), fontsize=18, color='black', pad=2)
+            ax.set_ylim(0, 7.5)
         plt.tight_layout()
 
-        return fig
+        return fig, ax
     
-    def plot_preferred_distance_polar(self, condition='binocular'):
+    def plot_preferred_distance_polar(self, condition='binocular', ax = None):
 
+        if ax is None:
+            fig = plt.figure(figsize=(8, 5))
+            ax = fig.add_subplot(1, 1, 1, polar=True)
+        else:
+            fig = ax.get_figure()
 
-        fig = plt.figure(figsize=(8, 5))
-        ax = fig.add_subplot(1, 1, 1, polar=True)
         ax.set_theta_zero_location('N')
         # Add gray background for central region (-25 to 25 degrees)
         ax.axvspan(np.radians(-25), np.radians(25), alpha=0.5, color='gray', zorder=0)
@@ -1319,23 +1334,25 @@ class RadialSummaries():
 
         theta = np.radians(pref_angles)
         pref_distances = np.array(pref_distances) + np.random.randn(len(pref_distances)) * 0.1 + 1
-        sc = ax.scatter(theta, pref_distances, c=pref_angles, cmap='viridis', vmin=-30, vmax=60, s=60, edgecolor='k', alpha=0.8)
+        sc = ax.scatter(theta, pref_distances, c=pref_angles, cmap='viridis', vmin=-30, vmax=60, s=40, edgecolor='k', alpha=0.8)
 
         ax.grid(False)
         ax.set_theta_direction(-1)
-        ax.set_thetamin(-30)
+        ax.set_thetamin(-35)
         ax.set_thetamax(65)
         ax.set_ylabel('Preferred Distance')
         ax.set_yticks([])
         # title will be condition
         if condition is None:
-            ax.set_title('Responsive Cells', fontsize=18, color='black', pad=2)
+            ax.set_title('Responsive', fontsize=18, color='black', pad=2)
         else:
             ax.set_title(condition.capitalize(), fontsize=18, color='black', pad=2)
 
         ax.legend()
 
         plt.tight_layout()
+
+        return fig, ax
     
     def plot_preferred_distance_polar_density(self):
         """
@@ -1419,7 +1436,12 @@ class RadialSummaries():
         plt.tight_layout()
         return fig
 
-    def plot_reliable_cells_map(self):
+    def plot_reliable_cells_map(self, ax = None):
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 10))
+        else:
+            fig = ax.get_figure()
 
         cells_to_plot = self.R.suite2p_id
 
@@ -1432,7 +1454,6 @@ class RadialSummaries():
         vmin = np.percentile(mean_img, 1)
         vmax = np.percentile(mean_img, 99)
 
-        fig, ax = plt.subplots(figsize=(10, 10))
         ax.imshow(ops['refImg'], alpha=0.5, cmap='gray', vmin=vmin, vmax=vmax)
 
         # Scatter plot each pixel
@@ -1469,7 +1490,7 @@ class RadialSummaries():
         plt.margins(0, 0)
         plt.tight_layout(pad=0)
 
-        return fig
+        return fig, ax
     
     def plot_rf_density_map(self, bins = 20):
         """
@@ -1559,15 +1580,20 @@ class RadialSummaries():
         
         return fig
     
-    def plot_modulated_cells_map(self, condition='binocular'):
+    def plot_modulated_cells_map(self, condition='binocular', ax = None):
 
-        cells_to_plot = self.modulated_cells[condition]
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 8))
+            
+        else:
+            fig = ax.get_figure()
 
-        if condition == 'binocular':
-            idx_condition = 1
-        elif condition == 'monocular':
-            idx_condition = 0
 
+        if condition is None:
+            cells_to_plot = self.responsive_cells
+        else:
+            cells_to_plot = self.modulated_cells[condition]
+        
         # Load Suite2p outputs
         stat = np.load(os.path.join(self.R.suite2p_dir, 'plane0/stat.npy'), allow_pickle=True)
         ops = np.load(os.path.join(self.R.suite2p_dir, 'plane0/ops.npy'), allow_pickle=True).item()
@@ -1576,8 +1602,7 @@ class RadialSummaries():
         mean_img = ops['meanImg']
         vmin = np.percentile(mean_img, 1)
         vmax = np.percentile(mean_img, 99)
-
-        fig, ax = plt.subplots(figsize=(10, 10))
+        
         plt.imshow(ops['refImg'], alpha=0.5, cmap='gray', vmin=vmin, vmax=vmax)
 
         # Scatter plot each pixel
@@ -1602,7 +1627,10 @@ class RadialSummaries():
             ypix = stat[cell_id]['ypix'][~stat[cell_id]['overlap']].mean()
             xpix = stat[cell_id]['xpix'][~stat[cell_id]['overlap']].mean()
 
-            rf_location = self.pullout_stat(cell_id=cell_id, condition=condition, stat_type='pref_angle')
+            if condition is None:
+                rf_location = self.pullout_stat(cell_id=cell_id, condition='binocular', stat_type='pref_angle')
+            else:
+                rf_location = self.pullout_stat(cell_id=cell_id, condition=condition, stat_type='pref_angle')
 
             ax.scatter(
                 xpix, ypix,
@@ -1610,15 +1638,29 @@ class RadialSummaries():
                 cmap='viridis',
                 vmin=-30,
                 vmax=60,
-                s=150, alpha=1,
+                s=120, alpha=1,
                 edgecolor='black', linewidth=1
             )
 
+        # Add title and subtitle
+        n_modulated = len(cells_to_plot)
+        n_responsive = len(self.responsive_cells)
+        
+        if condition is None:
+            fig.suptitle("Reliable", fontsize=22, color='black', y=0.98)
+            
+            percentage = (n_responsive / len(self.R.suite2p_id)) * 100
 
+            ax.set_title(f"{n_responsive} cells ({percentage:.1f}% of total)", fontsize=16, color='grey', pad=5)
+        else:
+            fig.suptitle(f"{condition.capitalize()}", fontsize=22, color='black', y=0.98)
+            percentage = (n_modulated / n_responsive) * 100
+            ax.set_title(f"{n_modulated} cells ({percentage:.1f}% of reliable)", fontsize=16, color='grey', pad=5)
+        
         ax.axis('off')
-        plt.tight_layout(pad=0)
+        plt.tight_layout(pad=0, rect=[0, 0, 1, 0.96])
 
-        return fig
+        return fig, ax
     
     def plot_location_map(self, condition):
 
@@ -1659,19 +1701,52 @@ class RadialSummaries():
 
         return fig
 
+    def plot_session_summary(self):
+
+        fig_responsive_map, _ = self.plot_modulated_cells_map(condition=None)
+        fig_binocular_map, _ = self.plot_modulated_cells_map(condition='binocular')
+        fig_monocular_map, _ = self.plot_modulated_cells_map(condition='monocular')
+
+        fig_distance_bars = plt.figure(figsize=(12, 4))
+        gs = fig_distance_bars.add_gridspec(1, 3, hspace=0.3, wspace=0.5)
+        # Create bar plot axes in second row
+        axes_bar = []
+        for i in range(3):
+            ax = fig_distance_bars.add_subplot(gs[0, i])
+            axes_bar.append(ax)
+
+        # Call each plotting function with the appropriate axis
+        self.plot_preferred_distance_bars(condition=None, ax=axes_bar[0])
+        self.plot_preferred_distance_bars(condition='binocular', ax=axes_bar[1])
+        self.plot_preferred_distance_bars(condition='monocular', ax=axes_bar[2])
+
+        fig_distance_polar =plt.figure(figsize=(12, 18))
+        gs = fig_distance_polar.add_gridspec(1, 3, hspace=0.3, wspace=0.5)
+
+        # Create polar plots in first row
+        axes_polar = []
+        for i in range(3):
+            ax = fig_distance_polar.add_subplot(gs[0, i], projection='polar')
+            axes_polar.append(ax)
+        
+        self.plot_preferred_distance_polar(condition=None, ax=axes_polar[0])
+        self.plot_preferred_distance_polar(condition='binocular', ax=axes_polar[1])
+        self.plot_preferred_distance_polar(condition='monocular', ax=axes_polar[2])
+
+        return fig_responsive_map, fig_binocular_map, fig_monocular_map, fig_distance_bars, fig_distance_polar
+
 class RadialMultiSession:
 
-    def __init__(self, animal_id, session_names):
+    def __init__(self, animal_id, experiment_name, base_multi_dir = r'D:/data-distance-coding-project/multi-session-data/', 
+        base_processed_dir = r'D:/data-distance-coding-project/processed-data/'):
 
-        self.animal_id = animal_id
-        self.animal_dir = self.get_animal_dir()
-        self.fov_pixels = 760
-        self.fov_units = 2000
-
-        self.session_names = session_names
-        self.numeral_names = session_names.keys()
+        self.base_multi_dir = base_multi_dir
+        self.base_processed_dir = base_processed_dir
+        self.multi_session_dir = os.path.join(self.base_multi_dir, animal_id + '_' + experiment_name)
+        
+        session_info_file = os.path.join(self.multi_session_dir, animal_id + '_' + experiment_name + '_sessions.txt')
+        self.read_config_file(session_info_file)
         self.mean_images = self.load_mean_images()
-        self.field_coordinates = self.load_coordinates()
 
         self.widefield_fov_pixels = 400
         self.widefield_fov_units = 5200
@@ -1681,25 +1756,44 @@ class RadialMultiSession:
         self.VFS_shifted = None
         self.load_widefield_maps()
         self.shift_widefield()
+
         self.area_names = ['V1', 'LM', 'AL', 'RL', 'AM', 'PM']
 
-        self.radial_sessions = self.load_radial_sessions()
-        self.areas_verts = self.load_areas_verts()
+        # self.radial_sessions = self.load_radial_sessions()
+        # self.areas_verts = self.load_areas_verts()
 
-    def get_animal_dir(self):
-        return r'D:/data-distance-coding-project/processed-data/{animal_id}'.format(animal_id=self.animal_id + '_radial')
+    def read_config_file(self, session_info_file):
 
-    def get_suite2p_dir(self, session_name):
-        return r'D:/data-distance-coding-project/processed-data/{session_name}/suite2p'.format(session_name=session_name)
+        self.session_names = []
+        with open(os.path.join(self.multi_session_dir, session_info_file), 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                session_name = line.split(',')
+                self.session_names.append(session_name)
+
+    def get_session_dir(self, session_number):
+        mouse_name, session_date, experiment_name = self.session_names[session_number]
+        session_dir = os.path.join(self.base_processed_dir, session_date + '_' + mouse_name + '_' + experiment_name)
+
+        if not os.path.exists(session_dir):
+            raise FileNotFoundError(f"Session directory does not exist: {session_dir}")
+
+        return session_dir
 
     def load_mean_images(self):
 
-        mean_images = {}
-        for numeral in self.numeral_names:
-            print(self.session_names[numeral])
-            ops = np.load(self.get_suite2p_dir(self.session_names[numeral]) + r'\plane0\ops.npy', allow_pickle=True).item()
-            mean_images[numeral] = ops['meanImg']
-        return mean_images
+        self.mean_images = []
+        for i, session_name in enumerate(self.session_names):
+            session_dir = self.get_session_dir(i)
+            suite2p_dir = os.path.join(session_dir, 'suite2p', 'plane0', 'ops.npy')
+            if not os.path.exists(suite2p_dir):
+                raise FileNotFoundError(f"Suite2p directory does not exist: {suite2p_dir}")
+            ops = np.load(suite2p_dir, allow_pickle=True).item()
+            self.mean_images.append(ops['meanImg'])
+
+        return self.mean_images
 
     def load_coordinates(self):
 
@@ -1912,10 +2006,10 @@ class RadialMultiSession:
             fig, ax = plt.subplots(figsize=(8, 8), dpi=100)  # 8x8 inches, adjust as needed
 
         # Plot each image at its field coordinates
-        for name in self.numeral_names:
+        for i, session_name in enumerate(self.session_names):
 
-            img = self.mean_images[name]
-            dx_units, dy_units = self.field_coordinates[name]
+            img = self.mean_images[i]
+            dx_units, dy_units = self.field_coordinates[session_name]
             img_h, img_w = img.shape
             img_w_units = self.pixels_to_units(img_w, scope='2p')
             img_h_units = self.pixels_to_units(img_h, scope='2p')
@@ -1924,7 +2018,7 @@ class RadialMultiSession:
                 dx_units - img_w_units/2, dx_units + img_w_units/2,
                 dy_units + img_h_units/2, dy_units - img_h_units/2  # origin='upper'
             ]
-            ax.imshow(img, cmap='gray', alpha=1, extent=extent_units, origin='upper', label=name)
+            ax.imshow(img, cmap='gray', alpha=1, extent=extent_units, origin='upper', label=session_name)
 
         # Set axis limits in units (canvas is 4000x4000 units)
         ax.set_xlim(-2500, 2500)
@@ -1947,11 +2041,10 @@ class RadialMultiSession:
 
         return x_units, y_units
     
-    
     def load_widefield_maps(self):
 
         # Load the snap.mat file from the animal directory
-        snap_mat_path = os.path.join(self.animal_dir, 'snap.mat')
+        snap_mat_path = os.path.join(self.multi_session_dir, 'snap.mat')
         snap_data = loadmat(snap_mat_path)
         widefield_img = snap_data['snap']
 
@@ -1960,12 +2053,10 @@ class RadialMultiSession:
 
         self.widefield_img = widefield_img
 
-        maps_mat_path = os.path.join(self.animal_dir, 'maps.mat')
+        maps_mat_path = os.path.join(self.multi_session_dir, 'maps.mat')
         maps_data = loadmat(maps_mat_path, struct_as_record=False, squeeze_me=True)
         self.VFS = maps_data['maps'].VFS_raw
         self.VFS = gaussian_filter(self.VFS, sigma=1.5)
-
-        # Allow user to pick a point in the widefield image to set as the origin, then shift the image accordingly
 
     def set_widefield_origin(self):
 
@@ -1979,7 +2070,6 @@ class RadialMultiSession:
         )
         ax.set_title("Click to set the origin (0,0) in widefield pixels")
     
-
         print("Please click on the image to set the new origin (0,0).")
         x_click, y_click = plt.ginput(1, timeout=-1)[0]
         plt.close(fig)
@@ -2000,7 +2090,7 @@ class RadialMultiSession:
 
     def shift_widefield(self):
 
-        dx, dy = self.set_widefield_origin()
+        dy, dx = self.set_widefield_origin()
 
         # Shift widefield image
         shifted_img = np.roll(self.widefield_img, shift=(dy, dx), axis=(0, 1))
@@ -2060,6 +2150,7 @@ class RadialMultiSession:
         fig.colorbar(im, ax=axs[1], fraction=0.046, pad=0.04)
 
         plt.tight_layout()
+        plt.show()
 
     def draw_areas(self):
 
@@ -2075,8 +2166,18 @@ class RadialMultiSession:
             img_h_units / 2, -img_h_units / 2  # origin='upper'
         ]
 
-        # Plot VFS_shifted on top of the window (output of plot_window)
-        fig, window_ax = self.plot_window()
+        # Create figure with VFS_shifted as the base image
+        fig, window_ax = plt.subplots(figsize=(8, 8), dpi=100)
+        window_ax.imshow(
+            np.rot90(self.VFS_shifted, 2),
+            cmap='jet',
+            extent=extent_units,
+            origin='upper'
+        )
+        window_ax.set_xlim(extent_units[0], extent_units[1])
+        window_ax.set_ylim(extent_units[2], extent_units[3])
+        window_ax.set_xlabel("X (units)")
+        window_ax.set_ylabel("Y (units)")
 
         # Overlay VFS_shifted with some transparency
         im = window_ax.imshow(

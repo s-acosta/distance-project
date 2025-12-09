@@ -42,7 +42,7 @@ Examples:
   python run_radial_analysis.py --mouse SAM041 --date 251120 --experiment tiling_4_120um --plot-single-cells
   
   # With reliable cells map
-  python run_radial_analysis.py --mouse SAM041 --date 251120 --experiment tiling_4_120um --plot-reliable-map
+  python run_radial_analysis.py --mouse SAM041 --date 251120 --experiment tiling_4_120um --plot-summary-maps
   
   # Custom number of bootstrap iterations
   python run_radial_analysis.py --mouse SAM041 --date 251120 --experiment tiling_4_120um --n-iterations 500
@@ -58,8 +58,8 @@ Examples:
                        help='Number of iterations for bootstrap analysis (default: 100)')
     parser.add_argument('--plot-single-cells', action='store_true',
                        help='Generate plots for individual cells')
-    parser.add_argument('--plot-reliable-map', action='store_true',
-                       help='Generate reliable cells map')
+    parser.add_argument('--plot-summary-maps', action='store_true',
+                       help='Generate summary maps')
     
     args = parser.parse_args()
     
@@ -120,13 +120,20 @@ Examples:
         print("Single cell plots saved")
     
     # Plot reliable cells map if requested (matches notebook: summ.plot_reliable_cells_map())
-    if args.plot_reliable_map:
+    if args.plot_summary_maps:
         print("\nGenerating reliable cells map...")
-        fig = summ.plot_reliable_cells_map()
-        map_file = os.path.join(results_dir, 'reliable_cells_map.png')
-        fig.savefig(map_file, dpi=300, bbox_inches='tight')
-        plt.close(fig)
-        print(f"Reliable cells map saved to: {map_file}")
+        fig_responsive_map, fig_binocular_map, fig_monocular_map, fig_distance_bars, fig_distance_polar = summ.plot_session_summary()
+        responsive_map_file = os.path.join(results_dir, 'responsive_map.png')
+        binocular_map_file = os.path.join(results_dir, 'binocular_map.png')
+        monocular_map_file = os.path.join(results_dir, 'monocular_map.png')
+        distance_bars_file = os.path.join(results_dir, 'distance_bars.png')
+        distance_polar_file = os.path.join(results_dir, 'distance_polar.png')
+        fig_responsive_map.savefig(responsive_map_file, dpi=300, bbox_inches='tight')
+        fig_binocular_map.savefig(binocular_map_file, dpi=300, bbox_inches='tight')
+        fig_monocular_map.savefig(monocular_map_file, dpi=300, bbox_inches='tight')
+        fig_distance_bars.savefig(distance_bars_file, dpi=300, bbox_inches='tight')
+        fig_distance_polar.savefig(distance_polar_file, dpi=300, bbox_inches='tight')
+        print(f"Summary maps saved to: {responsive_map_file}, {binocular_map_file}, {monocular_map_file}, {distance_bars_file}, {distance_polar_file}")
     
     print("\n" + "="*60)
     print("ANALYSIS COMPLETE")

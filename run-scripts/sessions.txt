@@ -1,0 +1,9 @@
+# Sessions configuration file
+# Format: mouse_name,record_date,experiment_name
+# Lines starting with # are comments
+
+SAM041,251126,tiling_5_120um
+SAM041,251126,tiling_6_120um
+SAM041,251128,tiling_7_120um
+SAM041,251128,tiling_8_120um
+SAM041,251126,tiling_9_120um

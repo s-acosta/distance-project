@@ -24,6 +24,7 @@ from scipy.ndimage import gaussian_filter
 from matplotlib.patches import Polygon
 from matplotlib.widgets import LassoSelector
 from matplotlib.path import Path
+from matplotlib.colors import LinearSegmentedColormap
 
 class RadialDevice:
 
@@ -370,43 +371,71 @@ class RadialDevice:
         result = linregress(x, y)
 
         return result.pvalue
-    
+
+    def bootstrap_modulation(self, cell, monocular=None, iterations=200):
+
+        mean_trace = self.get_all_traces(cell, distance=None, monocular=monocular, mean_trace=True)[0]
+        rf_idx = np.argmax(mean_trace)
+
+        all_traces = self.get_all_traces(cell, distance=0, monocular=monocular, mean_trace=False)
+        n_repeats = all_traces.shape[0]
+        n_halves = int(np.ceil(n_repeats / 2))
+        halves_vector = np.concatenate((np.full(n_halves, True), np.full(n_halves, False)))
+
+        preferred_distance_vec = np.zeros(iterations)
+        least_preferred_distance_vec = np.zeros(iterations)
+        modulation_index_vec = np.zeros(iterations)
+
+        for i in range(iterations):
+
+            shuffled_halves = np.array(sorted(halves_vector, key=lambda k: np.random.random())[:n_repeats])
+            distance_values_first_half = np.zeros(4)
+            distance_values_second_half = np.zeros(4)
+
+            for distance in [0, 1, 2, 3]:
+                all_traces = self.get_all_traces(cell, distance=distance, monocular=monocular, mean_trace=False)
+                
+                first_half_traces = all_traces[shuffled_halves, :]
+                second_half_traces = all_traces[np.invert(shuffled_halves), :]
+
+                first_half_mean = np.mean(first_half_traces[:, rf_idx], axis=0)
+                distance_values_first_half[distance] = first_half_mean
+
+                second_half_mean = np.mean(second_half_traces[:, rf_idx], axis=0)
+                distance_values_second_half[distance] = second_half_mean
+
+            pref_dist = int(np.argmax(distance_values_first_half))
+            least_pref_dist = int(np.argmin(distance_values_first_half))
+            
+            preferred_distance_vec[i] = pref_dist
+            least_preferred_distance_vec[i] = least_pref_dist
+
+            modulation_index_vec[i] = ((np.abs(distance_values_second_half[pref_dist]) - np.abs(distance_values_second_half[least_pref_dist])) /
+                                (np.abs(distance_values_second_half[pref_dist]) + np.abs(distance_values_second_half[least_pref_dist]) + 1e-10))
+
+        # Check if a value of preferred distance is chosen at least 60% of the time
+        # unique_distances, counts = np.unique(preferred_distance, return_counts=True)
+        # max_count = np.max(counts)
+        # consistency = max_count / iterations
+        # is_consistent = consistency >= consistency_threshold
+
+        return modulation_index_vec, preferred_distance_vec
+        
     def analyze_cell_modulation(self, cell, monocular=None, method='ANOVA'):
 
-        rf_values = [self.find_rf_values(cell, distance=distance, monocular=monocular) for distance in [0, 1, 2, 3, 4]]
-        distances_rf = [rf_values[i] for i in range(len(rf_values)-1)]
+        modulation_index_vec, preferred_distance_vec = self.bootstrap_modulation(cell, monocular=monocular, iterations=200)
+        preferred_distance = np.mean(preferred_distance_vec)
+        modulation_index = np.mean(modulation_index_vec)
 
         if method == 'ANOVA':
             # calculate the f_statistic and p_value
+            rf_values = [self.find_rf_values(cell, distance=distance, monocular=monocular) for distance in [0, 1, 2, 3, 4]]
+            distances_rf = [rf_values[i] for i in range(len(rf_values)-1)]
             f_stat, p_value = f_oneway(*distances_rf)
-        elif method == 'regression':
-            p_value = self.test_linear_trend_rf(cell, distances=[0, 1, 2, 3], monocular=monocular)
+        elif method == 'bootstrap':
+            p_value = np.mean(modulation_index_vec <=0)
         
-        # Split trials into two halves for cross-validation
-        half_rf_values = []
-        for values in distances_rf:
-            n_trials = len(values)
-            # Create a random permutation of indices
-            random_indices = np.random.permutation(n_trials)
-            half_idx = n_trials // 2
-            # Use the randomized indices to split the data
-            first_half = values[random_indices[:half_idx]]
-            second_half = values[random_indices[half_idx:]]
-            half_rf_values.append([first_half, second_half])
-        
-        # Use first half to determine preferred distance
-        first_half_means = np.array([np.mean(values[0]) for values in half_rf_values])
-        preferred_distance = np.argmax(first_half_means)
-        least_preferred_distance = np.argmin(first_half_means)
-        
-        # Use second half to calculate modulation strength
-        preferred_mean = np.mean(half_rf_values[preferred_distance][1])
-        least_preferred_mean = np.mean(half_rf_values[least_preferred_distance][1])
-        
-        # Calculate modulation strength using the second half data
-        modulation_strength = (np.abs(preferred_mean) - np.abs(least_preferred_mean)) / (np.abs(preferred_mean) + np.abs(least_preferred_mean) + 1e-10)  # Avoid division by zero
-
-        return p_value, preferred_distance, modulation_strength
+        return p_value, preferred_distance, modulation_index
 
     def analyze_ocular_dominance(self, cell):
 
@@ -423,60 +452,7 @@ class RadialDevice:
 
         return ocular_dominance_index
     
-    def analyze_condition_stats(self, monocular=None, method='ANOVA'):
-        
-        # Define condition name based on monocular and history options
-        if monocular is None:
-            condition_name = 'all_conditions'
-        elif monocular:
-            condition_name = 'monocular'
-        else:
-            condition_name = 'binocular'
-            
-        # Initialize empty lists to collect data for each cell
-        cell_data = []
-        
-        # Analyze each cell
-        for cell in self.suite2p_id:
-
-            print(f'Analyzing cell {cell} of {self.suite2p_id[-1]} for {condition_name} condition', end='\r', flush=True)
-            
-            # Analyze condition
-            is_reliable = self.analyze_cell_reliability(cell, monocular=monocular)[0]
-            p_value, pref_distance, mod_strength = self.analyze_cell_modulation(cell, monocular=monocular, method=method)
-            rf_position = self.find_rf_position(cell, distance=None, monocular=monocular)
-            
-            # Create a row for this cell
-            cell_row = {
-                'cell_id': cell,
-                'is_reliable': is_reliable,
-                'modulated': np.bool(p_value < 0.05),
-                'modulated_p': p_value,
-                'mod_strength': mod_strength,
-                'pref_distance': pref_distance,
-                'rf_position': rf_position,
-                'condition': condition_name
-            }
-            
-            cell_data.append(cell_row)
-        
-        # Create DataFrame from collected data
-        stats_df = pd.DataFrame(cell_data)
-        
-        # Calculate summary statistics
-        n_cells = len(stats_df)
-        n_responsive = stats_df['is_reliable'].sum()
-        n_modulated = stats_df['modulated'].sum()
-
-        # Print summary statistics
-        print(f'Condition: {condition_name}')
-        print(f"Total cells: {n_cells}")
-        print(f"Responsive cells: {n_responsive} ({n_responsive / n_cells * 100:.1f}%)")
-        print(f"Modulated cells: {n_modulated} ({n_modulated / n_responsive * 100:.1f}%)")
-        
-        return stats_df
-    
-    def analyze_session_stats(self, n_iterations=100, method='ANOVA'):
+    def analyze_session_stats(self, n_iterations=200, method='ANOVA'):
 
         # Initialize empty lists to collect data for each cell
         cell_data = []
@@ -486,20 +462,40 @@ class RadialDevice:
 
             print(f'Analyzing cell {cell} of {self.suite2p_id[-1]}', end='\r', flush=True)
 
-            rf = self.find_rf_position(cell, distance=None, monocular=None)
-            pref_distance = self.analyze_cell_modulation(cell, monocular=None, method=method)[1]
-            
             # Analyze condition
             is_responsive, visually_responsive, control_responsive, control_higher, mean_corr = self.analyze_cell_reliability(cell, monocular=None, n_iterations=n_iterations)
 
-            p_value_monocular, pref_distance_monocular, mod_strength_monocular = self.analyze_cell_modulation(cell, monocular=True, method=method)
-            rf_position_monocular = self.find_rf_position(cell, distance=None, monocular=True) 
-            
-            p_value_binocular, pref_distance_binocular, mod_strength_binocular = self.analyze_cell_modulation(cell, monocular=False, method=method)
-            rf_position_binocular = self.find_rf_position(cell, distance=None, monocular=False)
+            if is_responsive:
 
-            ocular_dominance_index = self.analyze_ocular_dominance(cell)
+                rf = self.find_rf_position(cell, distance=None, monocular=None)
+                pref_distance = np.mean(self.bootstrap_modulation(cell, monocular=None, iterations=100)[1])
             
+                p_value_monocular, pref_distance_monocular, mod_index_monocular = self.analyze_cell_modulation(cell, monocular=True, method=method)
+                rf_position_monocular = self.find_rf_position(cell, distance=None, monocular=True) 
+                
+                p_value_binocular, pref_distance_binocular, mod_index_binocular = self.analyze_cell_modulation(cell, monocular=False, method=method)
+                rf_position_binocular = self.find_rf_position(cell, distance=None, monocular=False)
+
+                ocular_dominance_index = self.analyze_ocular_dominance(cell)
+
+                monocular_modulated = np.bool(p_value_monocular < 0.05)
+                binocular_modulated = np.bool(p_value_binocular < 0.05)
+    
+            else:
+                rf = None
+                ocular_dominance_index = None
+                pref_distance = None
+                pref_distance_monocular = None
+                pref_distance_binocular = None
+                mod_index_monocular = None
+                mod_index_binocular = None
+                rf_position_monocular = None
+                rf_position_binocular = None
+                p_value_monocular = None
+                p_value_binocular = None
+                monocular_modulated = None
+                binocular_modulated = None
+
             # Create a row for this cell
             cell_row = {
                 'cell_id': cell,
@@ -512,14 +508,14 @@ class RadialDevice:
                 'responsive_control_higher': control_higher,
                 'responsive_mean_corr': mean_corr,
                 'ocular_dominance_index': ocular_dominance_index,
-                'monocular_modulated': np.bool(p_value_monocular < 0.05),
+                'monocular_modulated': monocular_modulated,
                 'monocular_modulated_p': p_value_monocular,
-                'monocular_strength': mod_strength_monocular,
+                'monocular_strength': mod_index_monocular,
                 'monocular_distance': pref_distance_monocular,
                 'monocular_rf': rf_position_monocular,
-                'binocular_modulated': np.bool(p_value_binocular < 0.05),
+                'binocular_modulated': binocular_modulated,
                 'binocular_modulated_p': p_value_binocular,
-                'binocular_strength': mod_strength_binocular,
+                'binocular_strength': mod_index_binocular,
                 'binocular_distance': pref_distance_binocular,
                 'binocular_rf': rf_position_binocular,
             }
@@ -532,14 +528,14 @@ class RadialDevice:
         # Calculate summary statistics
         n_cells = len(stats_df)
         n_responsive = stats_df['responsive'].sum()
-        # n_monocular_modulated = stats_df['monocular_modulated'].sum()
-        # n_binocular_modulated = stats_df['binocular_modulated'].sum()
+        n_monocular_modulated = stats_df['monocular_modulated'].sum()
+        n_binocular_modulated = stats_df['binocular_modulated'].sum()
 
         # Print summary statistics
         print(f"Total cells: {n_cells}")
         print(f"Responsive cells: {n_responsive} ({n_responsive / n_cells * 100:.1f}%)")
-        # print(f"Monocular modulated cells: {n_monocular_modulated} ({n_monocular_modulated / n_responsive * 100:.1f}%)")
-        # print(f"Binocular modulated cells: {n_binocular_modulated} ({n_binocular_modulated / n_responsive * 100:.1f}%)")
+        print(f"Monocular modulated cells: {n_monocular_modulated} ({n_monocular_modulated / n_responsive * 100:.1f}%)")
+        print(f"Binocular modulated cells: {n_binocular_modulated} ({n_binocular_modulated / n_responsive * 100:.1f}%)")
         
         return stats_df
 
@@ -1021,7 +1017,7 @@ class RadialSummaries():
         self.responsive_cells = self.find_responsive_cells()
         self.modulated_cells = self.find_modulated_cells()
 
-    def find_responsive_cells(self, correlation_threshold=0.8):
+    def find_responsive_cells(self, correlation_threshold=0.85):
 
         responsive_cells = self.radial_stats[
             (self.radial_stats['responsive_corr'] >= correlation_threshold) &
@@ -1755,6 +1751,8 @@ class RadialMultiSession:
         self.VFS = None
         self.VFS_shifted = None
         self.load_widefield_maps()
+        
+        self.widefield_dy, self.widefield_dx = self.set_widefield_origin()
         self.shift_widefield()
 
         self.area_names = ['V1', 'LM', 'AL', 'RL', 'AM', 'PM']
@@ -1867,6 +1865,566 @@ class RadialMultiSession:
         radial_sessions = pd.concat(tagged, ignore_index=True)
 
         return radial_sessions
+
+    def align_to_widefield(self, session_id, slider_limit_px=500):
+        """
+        Align a single session's mean image to the widefield image with scale, rotation, and translation.
+        Previously aligned sessions remain visible in green overlay.
+        
+        Parameters
+        ----------
+        session_id : int
+            The session index
+        slider_limit_px : int, optional
+            Maximum absolute translation (in px) for the sliders. Default is 500.
+            
+        Returns
+        -------
+        dict
+            Dictionary containing transformation parameters:
+            {'scale': float, 'rotation': float, 'dx': float, 'dy': float}
+        """
+
+        if hasattr(self, 'field_coordinates_widefield') and len(self.field_coordinates_widefield) > 0:
+            # Use the most recent alignment's scale and rotation
+            last_params = list(self.field_coordinates_widefield.values())[-1]
+            scale0 = last_params['scale']
+            rotation0 = last_params['rotation']
+        else:
+            scale0 = 0.33
+            rotation0 = 174
+
+        dx0, dy0 = 0.0, 0.0
+        alpha0 = 0.5
+
+        # Helper function to apply transformation to an image
+        def transform_image(img, scale, rotation, dx, dy):
+            """Apply scale, rotation, and translation to an image."""
+            h, w = img.shape[:2]
+            center = (w / 2, h / 2)
+            
+            # Create transformation matrix
+            # First scale and rotate around center
+            M_rot = cv2.getRotationMatrix2D(center, rotation, scale)
+            
+            # Then add translation
+            M_rot[0, 2] += dx
+            M_rot[1, 2] += dy
+            
+            # Apply transformation
+            transformed = cv2.warpAffine(
+                img, M_rot, (w, h),
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+            return transformed
+        
+        # Get the widefield reference image
+        widefield = self.widefield_img_shifted.copy()
+        
+        # Normalize widefield to 0-1 for display
+        widefield_norm = (widefield - widefield.min()) / (widefield.max() - widefield.min())
+        
+        # Get the mean image to align
+        mean_img = self.mean_images[session_id].copy()
+        
+        # Normalize mean image to 0-1
+        mean_img_norm = (mean_img - mean_img.min()) / (mean_img.max() - mean_img.min())
+        
+        # Resize mean_img to match widefield size
+        mean_img_resized = cv2.resize(mean_img_norm, 
+                                    (widefield.shape[1], widefield.shape[0]),
+                                    interpolation=cv2.INTER_LINEAR)
+        
+        # Create green colormap for mean images
+        green_cmap = LinearSegmentedColormap.from_list('green', ['black', 'lime'])
+        
+        # Set up the figure
+        fig, ax = plt.subplots(figsize=(10, 10))
+        plt.subplots_adjust(left=0.1, bottom=0.35, right=0.9, top=0.95)
+        
+        # Create initial composite
+        # Start with widefield in grayscale
+        composite = np.stack([widefield_norm, widefield_norm, widefield_norm], axis=2)
+        
+        # Overlay previously aligned sessions in green (dimmer, underneath)
+        if hasattr(self, 'field_coordinates_widefield'):
+            for prev_session_id, params in self.field_coordinates_widefield.items():
+                if prev_session_id != session_id:  # Don't show the current one yet
+                    prev_img = self.mean_images[prev_session_id].copy()
+                    prev_img_norm = (prev_img - prev_img.min()) / (prev_img.max() - prev_img.min())
+                    prev_img_resized = cv2.resize(prev_img_norm,
+                                                (widefield.shape[1], widefield.shape[0]),
+                                                interpolation=cv2.INTER_LINEAR)
+                    prev_transformed = transform_image(
+                        prev_img_resized,
+                        params['scale'],
+                        params['rotation'],
+                        params['dx'],
+                        params['dy']
+                    )
+                    # Blend green on top of grayscale using alpha compositing
+                    prev_alpha = 0.3
+                    prev_green = np.zeros_like(composite)
+                    prev_green[:, :, 1] = prev_transformed
+                    composite = composite * (1 - prev_alpha * (prev_transformed[:, :, None] > 0)) + prev_green * prev_alpha
+        
+        # Add current session on top (brighter)
+        current_transformed = transform_image(mean_img_resized, scale0, rotation0, dx0, dy0)
+        current_green = np.zeros_like(composite)
+        current_green[:, :, 1] = current_transformed
+        current_mask = (current_transformed > 0).astype(float)
+        composite = composite * (1 - alpha0 * current_mask[:, :, None]) + current_green * alpha0
+        
+        img_display = ax.imshow(composite)
+        ax.set_title(f"Aligning session: {self.session_names[session_id]}")
+        ax.axis('off')
+        
+        # Create sliders
+        ax_scale = plt.axes([0.15, 0.25, 0.7, 0.02])
+        ax_rotation = plt.axes([0.15, 0.20, 0.7, 0.02])
+        ax_dx = plt.axes([0.15, 0.15, 0.7, 0.02])
+        ax_dy = plt.axes([0.15, 0.10, 0.7, 0.02])
+        ax_alpha = plt.axes([0.15, 0.05, 0.7, 0.02])
+        
+        slider_scale = Slider(ax_scale, 'Scale', 0.1, 1.0, valinit=scale0, valstep=0.01)
+        slider_rotation = Slider(ax_rotation, 'Rotation (°)', -180, 180, valinit=rotation0, valstep=1)
+        slider_dx = Slider(ax_dx, 'dx (px)', -slider_limit_px, slider_limit_px, valinit=dx0, valstep=1)
+        slider_dy = Slider(ax_dy, 'dy (px)', -slider_limit_px, slider_limit_px, valinit=dy0, valstep=1)
+        slider_alpha = Slider(ax_alpha, 'Transparency', 0.0, 1.0, valinit=alpha0, valstep=0.05)
+        
+        def update(val):
+            """Update the display when sliders change."""
+            scale = slider_scale.val
+            rotation = slider_rotation.val
+            dx = slider_dx.val
+            dy = slider_dy.val
+            alpha = slider_alpha.val
+            
+            # Recreate composite
+            composite = np.stack([widefield_norm, widefield_norm, widefield_norm], axis=2)
+            
+            # Overlay previously aligned sessions (dimmer, underneath)
+            if hasattr(self, 'field_coordinates_widefield'):
+                for prev_numeral, params in self.field_coordinates_widefield.items():
+                    if prev_session_id != session_id:
+                        prev_img = self.mean_images[prev_numeral].copy()
+                        prev_img_norm = (prev_img - prev_img.min()) / (prev_img.max() - prev_img.min())
+                        prev_img_resized = cv2.resize(prev_img_norm,
+                                                    (widefield.shape[1], widefield.shape[0]),
+                                                    interpolation=cv2.INTER_LINEAR)
+                        prev_transformed = transform_image(
+                            prev_img_resized,
+                            params['scale'],
+                            params['rotation'],
+                            params['dx'],
+                            params['dy']
+                        )
+                        # Add to green channel with reduced intensity
+                        prev_alpha = 0.3
+                        prev_green = np.zeros_like(composite)
+                        prev_green[:, :, 1] = prev_transformed
+                        composite = composite * (1 - prev_alpha * (prev_transformed[:, :, None] > 0)) + prev_green * prev_alpha
+            
+            # Add current session on top (brighter)
+            current_transformed = transform_image(mean_img_resized, scale, rotation, dx, dy)
+            current_green = np.zeros_like(composite)
+            current_green[:, :, 1] = current_transformed
+            current_mask = (current_transformed > 0).astype(float)
+            composite = composite * (1 - alpha * current_mask[:, :, None]) + current_green * alpha
+            
+            img_display.set_data(composite)
+            ax.set_title(
+                f"Aligning session: {self.session_names[session_id]} | "
+                f"Scale: {scale:.2f}, Rotation: {rotation:.0f}°, "
+                f"dx: {dx:.0f}px, dy: {dy:.0f}px"
+            )
+            fig.canvas.draw_idle()
+        
+        # Connect sliders to update function
+        slider_scale.on_changed(update)
+        slider_rotation.on_changed(update)
+        slider_dx.on_changed(update)
+        slider_dy.on_changed(update)
+        slider_alpha.on_changed(update)
+        
+        plt.show(block=True)
+        
+        # Return the transformation parameters
+        return {
+            'scale': slider_scale.val,
+            'rotation': slider_rotation.val,
+            'dx': slider_dx.val,
+            'dy': slider_dy.val
+        }
+
+    def align_all_to_widefield(self, slider_limit_px=500):
+        """
+        Sequentially align all sessions to the widefield image.
+        Each aligned session remains visible while aligning subsequent ones.
+        
+        Parameters
+        ----------
+        slider_limit_px : int, optional
+            Maximum absolute translation (in px) for the sliders. Default is 500.
+            
+        Returns
+        -------
+        dict
+            Dictionary mapping session numeral to transformation parameters
+        """
+        # Initialize storage for transformations
+        
+        self.field_coordinates_widefield = {}
+        
+        print("Starting sequential alignment to widefield...")
+        print(f"Sessions to align: {list(self.session_names)}")
+        
+        for i, session_name in enumerate(self.session_names):
+            print(f"\nAligning session {session_name}...")
+            params = self.align_to_widefield(i, slider_limit_px=slider_limit_px)
+            self.field_coordinates_widefield[i] = params
+            print(f"Session {session_name} aligned: {params}")
+        
+        # # Save to file
+        # import pickle
+        # save_path = self.multi_session_dir + '/' + self.animal_id + '_field_coordinates_widefield.pkl'
+        # with open(save_path, 'wb') as f:
+        #     pickle.dump(self.field_coordinates_widefield, f)
+        # print(f"\nAll alignments saved to: {save_path}")
+        
+        return self.field_coordinates_widefield
+        
+    def plot_aligned_sessions(self, save_path=None):
+        """
+        Create a result figure showing all aligned sessions overlaid on the widefield image.
+        
+        Parameters
+        ----------
+        save_path : str, optional
+            Path to save the figure. If None, just displays the figure.
+            
+        Returns
+        -------
+        fig, ax
+            Matplotlib figure and axis objects
+        """
+        
+        # Helper function to apply transformation
+        def transform_image(img, scale, rotation, dx, dy):
+            """Apply scale, rotation, and translation to an image."""
+            h, w = img.shape[:2]
+            center = (w / 2, h / 2)
+            
+            M_rot = cv2.getRotationMatrix2D(center, rotation, scale)
+            M_rot[0, 2] += dx
+            M_rot[1, 2] += dy
+            
+            transformed = cv2.warpAffine(
+                img, M_rot, (w, h),
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+            return transformed
+        
+        # Get widefield reference
+        widefield = self.widefield_img_shifted.copy()
+        widefield_norm = (widefield - widefield.min()) / (widefield.max() - widefield.min())
+        
+        # Create composite
+        composite = np.stack([widefield_norm, widefield_norm, widefield_norm], axis=2)
+        
+        # Overlay all aligned sessions
+        if not hasattr(self, 'field_coordinates_widefield') or len(self.field_coordinates_widefield) == 0:
+            print("No aligned sessions found. Run align_all_to_widefield() first.")
+            return None, None
+        
+        for idx, (session_id, params) in enumerate(self.field_coordinates_widefield.items()):
+            mean_img = self.mean_images[session_id].copy()
+            mean_img_norm = (mean_img - mean_img.min()) / (mean_img.max() - mean_img.min())
+            mean_img_resized = cv2.resize(mean_img_norm,
+                                        (widefield.shape[1], widefield.shape[0]),
+                                        interpolation=cv2.INTER_LINEAR)
+            
+            transformed = transform_image(
+                mean_img_resized,
+                params['scale'],
+                params['rotation'],
+                params['dx'],
+                params['dy']
+            )
+            
+            # Blend using alpha compositing in green
+            alpha = 0.6
+            session_green = np.zeros_like(composite)
+            session_green[:, :, 1] = transformed
+            mask = (transformed > 0).astype(float)
+            composite = composite * (1 - alpha * mask[:, :, None]) + session_green * alpha
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 12))
+        ax.imshow(composite)
+        ax.set_title('All Sessions Aligned to Widefield', fontsize=16)
+        ax.axis('off')
+        
+        # # Add legend showing which sessions are included
+        # from matplotlib.patches import Patch
+        # legend_elements = [Patch(facecolor='gray', label='Widefield')]
+        # for session_id in self.field_coordinates_widefield.keys():
+        #     legend_elements.append(
+        #         Patch(facecolor='lime', alpha=0.6, label=f'Session {self.session_names[session_id]}')
+        #     )
+        # ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
+        
+        plt.tight_layout()
+        
+        # Save if path provided
+        if save_path is not None:
+            fig.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Figure saved to: {save_path}")
+        
+        plt.show()
+        
+        return fig, ax
+
+    def visualize_cell_transformation(self, session_id, cell_coords_local, save_path=None):
+        """
+        Visualize how local cell coordinates transform to global widefield coordinates.
+        Shows both the local view and the global view with the cells marked.
+        
+        Parameters
+        ----------
+        session_id : int or str
+            The session identifier
+        cell_coords_local : array-like, shape (n_cells, 2)
+            Cell coordinates in the session's local pixel space (x, y)
+        save_path : str, optional
+            Path to save the figure
+            
+        Returns
+        -------
+        fig, axes
+            Matplotlib figure and axes
+        """
+        
+        # Helper function to apply transformation
+        def transform_image(img, scale, rotation, dx, dy):
+            """Apply scale, rotation, and translation to an image."""
+            h, w = img.shape[:2]
+            center = (w / 2, h / 2)
+            
+            M_rot = cv2.getRotationMatrix2D(center, rotation, scale)
+            M_rot[0, 2] += dx
+            M_rot[1, 2] += dy
+            
+            transformed = cv2.warpAffine(
+                img, M_rot, (w, h),
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0
+            )
+            return transformed
+        
+        # Convert to numpy array
+        cell_coords_local = np.array(cell_coords_local, dtype=float)
+        
+        # Transform cells to global coordinates
+        cell_coords_global = self.transform_cells_to_widefield(session_id, cell_coords_local)
+        
+        # Get images
+        mean_img = self.mean_images[session_id].copy()
+        mean_img_norm = (mean_img - mean_img.min()) / (mean_img.max() - mean_img.min())
+        
+        widefield = self.widefield_img_shifted.copy()
+        widefield_norm = (widefield - widefield.min()) / (widefield.max() - widefield.min())
+        
+        # Get transformation parameters
+        params = self.field_coordinates_widefield[session_id]
+        
+        # Create transformed version of mean image
+        mean_img_resized = cv2.resize(mean_img_norm,
+                                    (widefield.shape[1], widefield.shape[0]),
+                                    interpolation=cv2.INTER_LINEAR)
+        mean_img_transformed = transform_image(
+            mean_img_resized,
+            params['scale'],
+            params['rotation'],
+            params['dx'],
+            params['dy']
+        )
+        
+        # Create composite for global view
+        composite = np.stack([widefield_norm, widefield_norm, widefield_norm], axis=2)
+        session_green = np.zeros_like(composite)
+        session_green[:, :, 1] = mean_img_transformed
+        mask = (mean_img_transformed > 0).astype(float)
+        composite = composite * (1 - 0.5 * mask[:, :, None]) + session_green * 0.5
+        
+        # Create figure with two subplots
+        fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+        
+        # Left panel: Local coordinates
+        axes[0].imshow(mean_img_norm, cmap='gray')
+        axes[0].scatter(cell_coords_local[:, 0], cell_coords_local[:, 1], 
+                    c='red', s=100, marker='o', edgecolors='white', linewidths=2)
+        for i, coord in enumerate(cell_coords_local):
+            axes[0].text(coord[0] + 5, coord[1] + 5, f'Cell {i+1}', 
+                        color='red', fontsize=10, fontweight='bold')
+        axes[0].set_title(f'Local View: Session {self.session_names[session_id]}', fontsize=14)
+        axes[0].set_xlabel('X (pixels)')
+        axes[0].set_ylabel('Y (pixels)')
+        
+        # Right panel: Global coordinates
+        axes[1].imshow(composite)
+        axes[1].scatter(cell_coords_global[:, 0], cell_coords_global[:, 1],
+                    c='red', s=100, marker='o', edgecolors='white', linewidths=2)
+        for i, coord in enumerate(cell_coords_global):
+            axes[1].text(coord[0] + 5, coord[1] + 5, f'Cell {i+1}',
+                        color='red', fontsize=10, fontweight='bold')
+        axes[1].set_title('Global View: Widefield Coordinates', fontsize=14)
+        axes[1].set_xlabel('X (pixels)')
+        axes[1].set_ylabel('Y (pixels)')
+        
+        # Print transformation info
+        print(f"\nTransformation for Session {self.session_names[session_id]}:")
+        print(f"  Scale: {params['scale']:.3f}")
+        print(f"  Rotation: {params['rotation']:.1f}°")
+        print(f"  Translation: dx={params['dx']:.1f}px, dy={params['dy']:.1f}px")
+        print(f"\nCell Coordinates:")
+        for i in range(len(cell_coords_local)):
+            print(f"  Cell {i+1}:")
+            print(f"    Local:  ({cell_coords_local[i, 0]:.1f}, {cell_coords_local[i, 1]:.1f})")
+            print(f"    Global: ({cell_coords_global[i, 0]:.1f}, {cell_coords_global[i, 1]:.1f})")
+        
+        plt.tight_layout()
+        
+        if save_path is not None:
+            fig.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"\nFigure saved to: {save_path}")
+        
+        plt.show()
+        
+        return fig, axes
+    
+    def transform_cells_to_widefield(self, session_id, cell_coords_local):
+        """
+        Transform cell coordinates from a session's local coordinate system to 
+        global widefield coordinates.
+        
+        Parameters
+        ----------
+        session_id : int or str
+            The session identifier
+        cell_coords_local : array-like, shape (n_cells, 2)
+            Cell coordinates in the session's 760x760 FOV pixel space (x, y).
+            
+        Returns
+        -------
+        cell_coords_global : ndarray, shape (n_cells, 2)
+            Cell coordinates in widefield pixel space (x, y)
+        """
+        
+        # Check if session has been aligned
+        if not hasattr(self, 'field_coordinates_widefield'):
+            raise ValueError("No alignments found. Run align_to_widefield() first.")
+        
+        if session_id not in self.field_coordinates_widefield:
+            raise ValueError(f"Session {session_id} has not been aligned yet.")
+        
+        # Get transformation parameters
+        params = self.field_coordinates_widefield[session_id]
+        scale = params['scale']
+        rotation = params['rotation']
+        dx = params['dx']
+        dy = params['dy']
+        
+        # Get image dimensions
+        mean_img = self.mean_images[session_id]
+        h_orig, w_orig = mean_img.shape 
+        h_wf, w_wf = self.widefield_img_shifted.shape 
+        
+        # Convert to numpy array with float dtype
+        cell_coords_local = np.array(cell_coords_local, dtype=float)
+        
+        # Step 1: Scale coordinates from 760x760 to widefield dimensions (as if resized)
+        resize_scale_x = w_wf / w_orig
+        resize_scale_y = h_wf / h_orig
+        
+        coords_resized = cell_coords_local.copy()
+        coords_resized[:, 0] *= resize_scale_x
+        coords_resized[:, 1] *= resize_scale_y
+        
+        # Now coords_resized are in widefield pixel space (but not yet transformed)
+        
+        # Center of widefield image
+        center_x = w_wf / 2
+        center_y = h_wf / 2
+        
+        # Convert rotation to radians
+        angle_rad = np.radians(rotation)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        
+        cell_coords_global = []
+        
+        for coord in coords_resized:
+            x, y = coord
+            
+            # Step 2: Make relative to widefield center
+            x_centered = x - center_x
+            y_centered = y - center_y
+            
+            # # Step 3: Apply scale
+            x_scaled = x_centered * scale
+            y_scaled = y_centered * scale
+            
+            # Step 4: Apply rotation
+            x_rotated = x_scaled * cos_a - y_scaled * sin_a
+            y_rotated = x_scaled * sin_a + y_scaled * cos_a
+            
+            # Step 5: Translate back to center and add dx, dy offset
+            x_final = x_rotated + center_x + dx
+            y_final = y_rotated + center_y + dy
+            
+            cell_coords_global.append([x_final, y_final])
+        
+        return np.array(cell_coords_global)
+
+    def transform_all_cells_to_widefield(self):
+        """
+        Transform all cells from all sessions to widefield coordinates.
+        Assumes cell coordinates are stored in self.radial_sessions DataFrame
+        with columns 'session', 'cell_id', and 'coords'.
+        
+        Returns
+        -------
+        radial_sessions_global : pd.DataFrame
+            Updated DataFrame with additional 'coords_widefield' column containing
+            global coordinates
+        """
+        
+        if not hasattr(self, 'radial_sessions'):
+            raise ValueError("No radial_sessions found. Load or compute session stats first.")
+        
+        # Create a copy of the dataframe
+        radial_sessions_global = self.radial_sessions.copy()
+        
+        # Add new column for global coordinates
+        coords_widefield = []
+        
+        for idx, row in radial_sessions_global.iterrows():
+            session_id = row['session']
+            cell_coord_local = np.array(row['coords']).reshape(1, 2)  # Single cell coordinate
+            
+            try:
+                coord_global = self.transform_cells_to_widefield(session_id, cell_coord_local)
+                coords_widefield.append(coord_global[0])
+            except ValueError as e:
+                print(f"Warning: Could not transform cell from session {session_id}: {e}")
+                coords_widefield.append([np.nan, np.nan])
+        
+        radial_sessions_global['coords_widefield'] = coords_widefield
+        
+        return radial_sessions_global
 
     def align_translation(self, fixed_numeral = 'IV',
                       moving_numeral = 'I',
@@ -2090,7 +2648,8 @@ class RadialMultiSession:
 
     def shift_widefield(self):
 
-        dy, dx = self.set_widefield_origin()
+        dx = self.widefield_dx
+        dy = self.widefield_dy
 
         # Shift widefield image
         shifted_img = np.roll(self.widefield_img, shift=(dy, dx), axis=(0, 1))

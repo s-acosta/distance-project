@@ -3,10 +3,9 @@ load('snap.mat')
 load('maps.mat');
 % load('alt.mat')
 % load('azi.mat')
-reference = snap;
+reference = SAM043_ref;
 reference = imresize(reference, size(maps.VFS_processed));
 maps.HorizontalRetinotopy = maps.HorizontalRetinotopy;
-
 %%
 field_of_view_vertical = maps.VerticalRetinotopy > -5 & maps.VerticalRetinotopy < 5;
 field_of_view_horizontal = maps.HorizontalRetinotopy > 0;
@@ -23,8 +22,8 @@ axis equal;
 hold all; 
 %plot second data 
 ax2 = axes; 
-im1 = imagesc(ax2, imgaussfilt(maps.VFS_raw, 1.5)); 
-im1.AlphaData = 0.3; % change this value to change the foreground image transparency 
+im1 = imagesc(ax2, imgaussfilt(maps.VFS, 3)); 
+im1.AlphaData = 0.5; % change this value to change the foreground image transparency 
 axis equal; 
 %%Hide the top axes 
 ax2.Visible = 'off'; 
@@ -51,7 +50,7 @@ axis square;
 hold all; 
 %plot second data 
 ax2 = axes; 
-im1 = imagesc(ax2, alt); 
+im1 = imagesc(ax2, maps.alt); 
 im1.AlphaData = 0.5; % change this value to change the foreground image transparency 
 axis square; 
 %link axes 
@@ -78,7 +77,7 @@ axis square;
 hold all; 
 %plot second data 
 ax2 = axes; 
-im1 = imagesc(ax2, azi); 
+im1 = imagesc(ax2, maps.azi); 
 im1.AlphaData = 0.5; % change this value to change the foreground image transparency 
 axis square; 
 %link axes 

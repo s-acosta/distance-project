@@ -26,6 +26,74 @@ from src.viz.CellVisualizer import CellVisualizer
 from src.viz.SessionVisualizer import SessionVisualizer
 from src.data.WidefieldTransformer import WidefieldAligner, WidefieldMapper
 
+def load_dataframe(
+    mouse_name: str,
+    experiment_name: str,
+    record_date: str = None,
+    base_data_dir: str = r'D:/data-distance-coding-project/processed-data',
+    base_multi_session_dir: str = r'D:/data-distance-coding-project/multi-session-data'
+) -> pd.DataFrame:
+    """
+    Load a session DataFrame from disk.
+
+    Can load either a single session DataFrame or a combined sessions DataFrame
+    depending on whether record_date is provided.
+
+    Parameters
+    ----------
+    mouse_name : str
+        Mouse identifier (e.g., 'SAM041')
+    experiment_name : str
+        Experiment name (e.g., 'tiling_3_120um' for single session,
+        or 'tiling120um' for combined)
+    record_date : str, optional
+        Recording date (e.g., '251128'). If provided, loads single session.
+        If None, loads combined sessions DataFrame.
+    base_data_dir : str, optional
+        Base directory for processed single-session data
+    base_multi_session_dir : str, optional
+        Base directory for multi-session combined data
+
+    Returns
+    -------
+    pd.DataFrame
+        Loaded DataFrame with cell statistics
+
+    Examples
+    --------
+    >>> # Load single session
+    >>> df = load_dataframe('SAM041', 'tiling_3_120um', record_date='251128')
+    >>>
+    >>> # Load combined sessions
+    >>> df = load_dataframe('SAM041', 'tiling120um')
+    """
+    if record_date is not None:
+        # Single session
+        session_name = f'{record_date}_{mouse_name}_{experiment_name}'
+        df_path = os.path.join(
+            base_data_dir,
+            session_name,
+            f'{session_name}_dataframe.pkl'
+        )
+    else:
+        # Combined sessions
+        df_path = os.path.join(
+            base_multi_session_dir,
+            f'{mouse_name}_{experiment_name}',
+            f'{mouse_name}_{experiment_name}_combined_sessions.pkl'
+        )
+
+    if not os.path.exists(df_path):
+        raise FileNotFoundError(f"DataFrame not found at: {df_path}")
+
+    with open(df_path, 'rb') as f:
+        df = pickle.load(f)
+
+    print(f"[ok] Loaded DataFrame from {df_path} ({len(df)} cells)")
+
+    return df
+
+
 def analyze_session(
     mouse_name: str,
     record_date: str,

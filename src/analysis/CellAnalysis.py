@@ -488,3 +488,37 @@ class SessionAnalyzer:
         stats_df = pd.DataFrame(cell_data)
 
         return stats_df
+
+    def save_dataframe(self, df, save_path=None):
+        """
+        Save a DataFrame to disk.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to save
+        save_path : str, optional
+            Path to save the DataFrame. If None, saves to device.data_dir
+            with automatic naming. Supports .csv and .pkl extensions.
+
+        Returns
+        -------
+        str
+            Full path where the DataFrame was saved
+        """
+        if save_path is None:
+            save_path = f'{self.device.session_name}_dataframe.pkl'
+
+        full_save_path = os.path.join(self.device.data_dir, save_path)
+
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(full_save_path), exist_ok=True)
+
+        if full_save_path.endswith('.csv'):
+            df.to_csv(full_save_path, index=False)
+        else:
+            df.to_pickle(full_save_path)
+
+        print(f'Saved DataFrame to: {full_save_path}')
+
+        return full_save_path

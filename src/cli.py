@@ -18,7 +18,6 @@ Usage:
 import argparse
 import sys
 
-
 def main():
     parser = argparse.ArgumentParser(
         description='Distance coding project analysis CLI',

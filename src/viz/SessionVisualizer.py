@@ -547,10 +547,10 @@ class SessionVisualizer():
         ax.legend(loc='upper right', framealpha=0.9, edgecolor='gray', fontsize=12)
 
         # add title with less padding so they appear closer
-        fig.suptitle('Modulated Cells', fontsize=22, color='black', y=0.96, fontweight='bold')
-        ax.set_title(self._get_session_title(), fontsize=20, color='grey', pad=2)
-
         plt.tight_layout()
+        fig.suptitle('Modulated Cells', fontsize=22, color='black', y=1.1, fontweight='bold')
+        ax.set_title(self._get_session_title(), fontsize=20, color='grey', pad=2.5, y=1.05)
+        
 
         return fig
 
@@ -1436,3 +1436,125 @@ class SessionVisualizer():
         self.plot_preferred_distance_polar(condition='monocular', ax=axes_polar[2])
 
         return fig_responsive_map, fig_binocular_map, fig_monocular_map, fig_distance_bars, fig_distance_polar
+
+    def plot_modulation_fraction_by_angle(self, modulation_type='binocular',
+                                           angle_range=(-30, 75), window_size=5,
+                                           area=None, ax=None, show_density=True, color=None):
+        """
+        Plot fraction of modulated cells among reliable cells as a function of RF angle.
+
+        Generalized version that works for any modulation type.
+
+        Parameters
+        ----------
+        modulation_type : str
+            Type of modulation ('binocular', 'monocular', 'both')
+        angle_range : tuple, optional
+            (min_angle, max_angle) range to plot (default: (-30, 75))
+        window_size : float, optional
+            Half-width of the sliding window in degrees (default: 5)
+        area : str, optional
+            Visual area to filter by (e.g., 'V1', 'LM'). If None, uses all areas.
+            Only applicable in multi-session mode.
+        ax : matplotlib.axes.Axes, optional
+            Axis to plot on. If None, creates new figure.
+        show_density : bool, optional
+            Whether to overlay reliable cell count on secondary y-axis (default: True)
+        color : str, optional
+            Color for the line plot. If None, uses modulation_colors dict.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The figure object
+        results : dict
+            Dictionary with 'angles', 'fractions', 'counts_reliable', 'counts_modulated'
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 5))
+        else:
+            fig = ax.get_figure()
+
+        if color is None:
+            color = self.modulation_colors.get(modulation_type, 'steelblue')
+
+        # Filter by area if specified
+        if area is not None:
+            base_df = self.filter_by_area(self.session_df, area_name=area)
+        else:
+            base_df = self.session_df
+
+        # Get reliable cells and their RF values
+        reliable_df = self.filter_by_reliability(base_df, reliable_type='reliable', threshold=0.85)
+        reliable_rf = self.extract_general_feature(reliable_df, feature='RF')
+
+        # Get modulated cells and their RF values
+        modulated_df = self.filter_by_modulation(base_df, modulation_type=modulation_type)
+        # Extract RF values - use condition-specific extraction if modulation type is specified
+        if modulation_type in ['binocular', 'monocular']:
+            modulated_rf = self.extract_condition_feature(modulated_df, condition=modulation_type, feature='RF')
+        else:
+            modulated_rf = self.extract_general_feature(modulated_df, feature='RF')
+
+        # Convert to numpy arrays
+        reliable_rf = np.array(reliable_rf)
+        modulated_rf = np.array(modulated_rf)
+
+        # Create angle bins
+        angles = np.arange(angle_range[0], angle_range[1] + 1, 1)
+
+        # Compute fractions for each angle window
+        frac_modulated = []
+        counts_reliable = []
+        counts_modulated = []
+
+        for ang in angles:
+            # Count reliable cells in window
+            rf_window = (reliable_rf >= ang - window_size) & (reliable_rf < ang + window_size)
+            rel_count = np.sum(rf_window)
+
+            # Count modulated cells in window
+            mod_count = np.sum((modulated_rf >= ang - window_size) & (modulated_rf < ang + window_size))
+
+            counts_reliable.append(rel_count)
+            counts_modulated.append(mod_count)
+
+            if rel_count > 0:
+                frac = mod_count / rel_count
+            else:
+                frac = np.nan
+            frac_modulated.append(frac)
+
+        # Plot fraction
+        ax.plot(angles, frac_modulated, color=color, lw=2, label=f'{modulation_type.capitalize()} fraction')
+        ax.set_xlabel('RF Angle (degrees)', fontsize=14)
+        ax.set_ylabel(f'Fraction {modulation_type.capitalize()} among Reliable', fontsize=14)
+        ax.set_ylim(0, 1.05)
+        ax.axhline(0.5, color='gray', ls='--', alpha=0.5)
+        ax.grid(alpha=0.3)
+        #set lims from 0 to 0.5
+        ax.set_ylim(0, 0.4)
+
+        # Overlay reliable cell density
+        if show_density:
+            ax2 = ax.twinx()
+            ax2.fill_between(angles, counts_reliable, color='gray', alpha=0.2, label='Reliable count')
+            ax2.set_ylabel('Reliable Cell Count', fontsize=14, color='gray')
+            ax2.tick_params(axis='y', labelcolor='gray')
+
+        # Title
+        area_label = f' - {area}' if area is not None else ''
+        fig.suptitle(f'{modulation_type.capitalize()} Fraction by RF Angle{area_label} (window: ±{window_size}°)',
+                     fontsize=18, color='black', y=0.96, fontweight='bold')
+        ax.set_title(self._get_session_title(), fontsize=14, color='grey', pad=2)
+
+        plt.tight_layout()
+
+        results = {
+            'angles': angles,
+            'fractions': np.array(frac_modulated),
+            'counts_reliable': np.array(counts_reliable),
+            'counts_modulated': np.array(counts_modulated)
+        }
+
+        return fig, results

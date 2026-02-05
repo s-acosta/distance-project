@@ -26,8 +26,8 @@ class SessionVisualizer():
     session_df : pd.DataFrame
         Session DataFrame with cell statistics. Must contain 'session_name' column.
         For multi-session, must also contain 'wf_coords' column.
-    animal_id : str, optional
-        Required for multi-session mode. Animal identifier (e.g., 'SAM041')
+    mouse_name : str, optional
+        Required for multi-session mode. Mouse identifier (e.g., 'SAM041')
     experiment_name : str, optional
         Required for multi-session mode. Experiment name (e.g., 'tiling_120um')
     base_data_dir : str, optional
@@ -44,16 +44,16 @@ class SessionVisualizer():
 
     Multi-session:
     >>> combined_df = combiner.combine_sessions()  # has multiple session_name values
-    >>> visualizer = SessionVisualizer(combined_df, animal_id='SAM041', experiment_name='tiling_120um')
+    >>> visualizer = SessionVisualizer(combined_df, mouse_name='SAM041', experiment_name='tiling_120um')
     >>> visualizer.plot_reliable_cells_map(show_areas=True)
     """
 
-    def __init__(self, session_df, animal_id=None, experiment_name=None,
+    def __init__(self, session_df, mouse_name=None, experiment_name=None,
                  base_data_dir=r'D:\data-distance-coding-project\processed-data',
                  base_multi_dir=r'D:\data-distance-coding-project\multi-session-data'):
 
         self.session_df = session_df
-        self.animal_id = animal_id
+        self.mouse_name = mouse_name
         self.experiment_name = experiment_name
         self.base_data_dir = base_data_dir
         self.base_multi_dir = base_multi_dir
@@ -104,9 +104,9 @@ class SessionVisualizer():
     def _validate_mode_requirements(self):
         """Validate that required dependencies are provided for the detected mode."""
         if self.mode == 'multi':
-            if self.animal_id is None or self.experiment_name is None:
+            if self.mouse_name is None or self.experiment_name is None:
                 raise ValueError(
-                    "Multi-session mode requires 'animal_id' and 'experiment_name' parameters. "
+                    "Multi-session mode requires 'mouse_name' and 'experiment_name' parameters. "
                     f"Detected {self.session_df['session_name'].nunique()} unique sessions in DataFrame."
                 )
             if 'wf_coords' not in self.session_df.columns:
@@ -155,11 +155,11 @@ class SessionVisualizer():
         """
         multi_session_dir = os.path.join(
             self.base_multi_dir,
-            f'{self.animal_id}_{self.experiment_name}'
+            f'{self.mouse_name}_{self.experiment_name}'
         )
         params_path = os.path.join(
             multi_session_dir,
-            f'{self.animal_id}_{self.experiment_name}_alignment_parameters.pkl'
+            f'{self.mouse_name}_{self.experiment_name}_alignment_parameters.pkl'
         )
 
         if not os.path.exists(params_path):

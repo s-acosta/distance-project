@@ -7,11 +7,12 @@ setup_project_path()
 import numpy as np
 import matplotlib.pyplot as plt
 from src.utils import setup_plot_style
+from src.analysis.CellAnalysis import CellAnalyzer
 colors = setup_plot_style()
 
 class CellVisualizer:
 
-    def __init__(self, device, analyzer):
+    def __init__(self, device):
         """
         Initialize CellVisualizer with separate data and analysis classes.
 
@@ -19,11 +20,9 @@ class CellVisualizer:
         ----------
         device : RadialDevice
             RadialDevice instance containing data access methods
-        analyzer : CellAnalyzer
-            CellAnalyzer instance containing analysis methods
         """
         self.device = device
-        self.analyzer = analyzer
+        self.analyzer = CellAnalyzer(device)
         self.colors = ['#FFA500', '#35b779', '#31688e', '#440154', 'grey']
 
     def plot_stimulus_response(self, repeats=10, cell = None):

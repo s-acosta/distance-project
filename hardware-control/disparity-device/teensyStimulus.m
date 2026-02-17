@@ -15,7 +15,7 @@ function stim_log = teensyStimulus(video_path, opts)
 
 arguments
     video_path (1,1) string
-    opts.PORT (1,1) string = "COM7"
+    opts.PORT (1,1) string = "COM3"
     opts.baud (1,1) double = 115200
     opts.H (1,1) double = 240
     opts.W (1,1) double = 240

@@ -1,15 +1,25 @@
+# IDE
+.idea/
 
-/.idea
-/.idea
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data files
 *.mat
-linear-notebooks/distance_comparison_plots/cell_213_distance_comparison.png
 *.json
-*.png
-*.asv
-*.code-workspace
-/src/__pycache__
-/.venv
-/.venv
+
+# Media (large files)
 *.mp4
 *.avi
-/hardware-control/disparity-device/stimulus
+*.asv
+
+# Generated images
+*.png
+
+# Stimulus data
+/hardware-control/disparity-device/stimulus/
+
+# VS Code
+*.code-workspace

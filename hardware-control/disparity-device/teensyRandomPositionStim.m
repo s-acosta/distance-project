@@ -22,7 +22,7 @@ function Stimdata = teensyRandomPositionStim(opts)
 %   Stimdata.repeats        scalar                    - Repeats per position
 
 arguments
-    opts.positions (1,:) double = linspace(20, 220, 10)  % x positions (pixels)
+    opts.positions (1,:) double = linspace(20, 220, 8)  % x positions (pixels)
     opts.stim_size (1,1) double = 30                      % ball diameter (pixels)
     opts.rcycles (1,1) double = 1                          % radial checkerboard cycles
     opts.tcycles (1,1) double = 2                          % angular checkerboard cycles
@@ -32,8 +32,9 @@ arguments
     opts.W (1,1) double = 240
     opts.n_repeats (1,1) double = 10                       % repeats per position
     opts.on_time (1,1) double = 2.0                        % stim display duration (s)
-    opts.off_time (1,1) double = 2.0                       % gray blank duration (s)
+    opts.off_time (1,1) double = 4                % gray blank duration (s)
     opts.target_fps (1,1) double = 10
+    opts.eye (1,1) string = "none"                             % eye orientation: "none", "left" (+90°), "right" (-90°)
     opts.DAQ_flag (1,1) logical = false
     opts.verbose (1,1) logical = true
     opts.preview (1,1) logical = false
@@ -48,6 +49,7 @@ if opts.verbose
 end
 
 gray_frame = uint8(ones(opts.H, opts.W, 3) * 127);
+gray_frame   = rotate_for_eye(gray_frame, opts.eye);
 gray_payload = rgb565_payload(gray_frame);
 
 % Pre-compute ball frame and payload for each position
@@ -56,6 +58,7 @@ ball_payloads = cell(1, n_positions);
 for i = 1:n_positions
     ball_frames{i} = make_ball_frame(opts.positions(i), opts.stim_size, ...
         opts.W, opts.H, opts.rcycles, opts.tcycles);
+    ball_frames{i} = rotate_for_eye(ball_frames{i}, opts.eye);
     ball_payloads{i} = rgb565_payload(ball_frames{i});
 end
 
@@ -74,6 +77,7 @@ if opts.verbose
     fprintf('Total presentations: %d\n', opts.n_repeats * n_positions);
     fprintf('Total duration: %.2f s (%.2f min)\n', total_dur, total_dur/60);
     fprintf('Target FPS: %.2f\n', opts.target_fps);
+    fprintf('Eye orientation: %s\n', opts.eye);
     if opts.preview
         fprintf('MODE: PREVIEW (screen only, no Teensy)\n');
     else
@@ -92,9 +96,12 @@ if opts.preview
     title(ax, 'Preview - Gray');
     drawnow;
 else
-    % Initialize DAQ triggering
-    wf = WidefieldTriggerer(opts.DAQ_flag);
-    wf.initialize(total_dur);
+
+    if opts.DAQ_flag
+        % Initialize DAQ triggering
+        wf = WidefieldTriggerer(opts.DAQ_flag);
+        wf.initialize(total_dur);
+    end
 
     % Open serial
     s = serialport(opts.PORT, opts.baud, "Timeout", 2);
@@ -110,7 +117,8 @@ stim_on   = zeros(opts.n_repeats, n_positions);
 stim_end  = zeros(opts.n_repeats, n_positions);
 position_order = zeros(opts.n_repeats, n_positions);
 
-% Pre-compute all shuffled orders
+% Pre-compute all shuffled orders (fixed seed → reproducible every run)
+rng(0);
 for rep = 1:opts.n_repeats
     position_order(rep, :) = randperm(n_positions);
 end
@@ -123,7 +131,7 @@ end
 % Start timing and trigger DAQ
 experiment_start = tic;
 
-if ~opts.preview
+if ~opts.preview && opts.DAQ_flag
     wf.start();
 end
 
@@ -245,6 +253,7 @@ Stimdata.off_time       = opts.off_time;
 Stimdata.on_time        = opts.on_time;
 Stimdata.repeats        = opts.n_repeats;
 Stimdata.stim_size      = opts.stim_size;
+Stimdata.eye            = opts.eye;
 
 % % Save
 % uisave('Stimdata');
@@ -283,6 +292,15 @@ function frame = make_ball_frame(x_pos, stim_size, W, H, rcycles, tcycles)
     bx2 = bx1 + (x2 - x1);
 
     frame(y1:y2, x1:x2, :) = ball_rgb(by1:by2, bx1:bx2, :);
+end
+
+function frame = rotate_for_eye(frame, eye)
+    if strcmp(eye, 'right')
+        frame = flip(frame, 2);    % invert x axis: position 0 → rightmost
+        frame = rot90(frame, 1);   % +90° CCW
+    elseif strcmp(eye, 'leftt')
+        frame = rot90(frame, -1);  % -90° CW
+    end
 end
 
 function payload = rgb565_payload(img)

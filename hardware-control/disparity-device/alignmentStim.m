@@ -9,81 +9,78 @@ function alignmentStim(opts)
 %   alignmentStim('preview', true)  % Preview on screen only
 
 arguments
-    opts.positions (1,2) double = [60 180]       % x positions of left/right balls
-    opts.stim_size (1,1) double = 30             % ball diameter (pixels)
+    opts.positions (1,2) double = [120]       % x positions of left/right balls
+    opts.stim_size (1,1) double = 30           % ball diameter (pixels)
     opts.rcycles   (1,1) double = 1              % radial checkerboard cycles
     opts.tcycles   (1,1) double = 2              % angular checkerboard cycles
-    opts.PORT      (1,1) string = "COM3"
+    opts.PORT      (1,1) string = "COM5"
     opts.baud      (1,1) double = 115200
     opts.H         (1,1) double = 240
     opts.W         (1,1) double = 240
     opts.target_fps(1,1) double = 10
+    opts.eye       (1,1) string  = "none"        % eye orientation: "none", "left" (+90°), "right" (-90°)
     opts.preview   (1,1) logical = false
+    opts.bw        (1,1) logical = false         % black background, white balls
 end
-
-frame_interval = 1 / opts.target_fps;
 
 %% Build frame with two balls
-frame = uint8(ones(opts.H, opts.W, 3) * 127);
-for i = 1:2
-    frame = place_ball(frame, opts.positions(i), opts.stim_size, ...
-        opts.W, opts.H, opts.rcycles, opts.tcycles);
+if opts.bw
+    frame = uint8(zeros(opts.H, opts.W, 3));
+else
+    frame = uint8(ones(opts.H, opts.W, 3) * 127);
 end
+if opts.stim_size > 0
+    for i = 1:length(opts.positions)
+        frame = place_ball(frame, opts.positions(i), opts.stim_size, ...
+            opts.W, opts.H, opts.rcycles, opts.tcycles, opts.bw);
+    end
+end
+frame = rotate_for_eye(frame, opts.eye);
 payload = rgb565_payload(frame);
 
 fprintf('=== Alignment Stimulus ===\n');
 fprintf('Ball positions: [%d, %d]\n', opts.positions(1), opts.positions(2));
 fprintf('Ball size: %d pixels\n', opts.stim_size);
+if opts.bw
+    fprintf('Mode: B&W (white balls, black background)\n');
+end
 if opts.preview
     fprintf('MODE: PREVIEW (screen only)\n');
 else
     fprintf('Port: %s\n', opts.PORT);
 end
-fprintf('Press Ctrl+C to stop.\n');
+fprintf('Eye orientation: %s\n', opts.eye);
 fprintf('==========================\n\n');
 
-%% Setup
+%% Send
 if opts.preview
     fig = figure('Name', 'Alignment Preview', 'NumberTitle', 'off');
     ax = axes(fig);
     imshow(frame, 'Parent', ax);
-    title(ax, 'Alignment - press Ctrl+C to stop');
+    title(ax, 'Alignment');
     drawnow;
 else
     s = serialport(opts.PORT, opts.baud, "Timeout", 2);
     configureTerminator(s, "LF");
     flush(s);
     s.OutputBufferSize = 300000;
-end
-
-%% Stream loop
-cleanupObj = onCleanup(@() cleanup(opts.preview));
-while true
-    if ~opts.preview
-        writeline(s, sprintf('IMG %d %d', opts.W, opts.H));
-        write(s, payload, 'uint8');
-    end
-    pause(frame_interval);
+    writeline(s, sprintf('IMG %d %d', opts.W, opts.H));
+    write(s, payload, 'uint8');
 end
 
 end
 
-%% --- Helpers ---
-
-function cleanup(is_preview)
-    if ~is_preview
-        % serialport auto-clears on scope exit
-    end
-    fprintf('Alignment stimulus stopped.\n');
-end
-
-function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles)
+function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles, bw)
     xylim = pi * rcycles;
     [xg, yg] = meshgrid(linspace(-xylim, xylim, stim_size));
-    at = atan2(yg, xg);
-    checksN = (1 + sign(sin(at * tcycles) + eps) .* sign(sin(sqrt(xg.^2 + yg.^2)))) / 2;
     circle = (xg.^2 + yg.^2) <= xylim^2;
-    ball = circle .* checksN + 0.5 * ~circle;
+    if bw
+        ball = double(circle);
+    else
+        at = atan2(yg, xg);
+        checksN = (1 + sign(sin(at * tcycles) + eps) .* sign(sin(sqrt(xg.^2 + yg.^2)))) / 2;
+        ball = circle .* checksN + 0.5 * ~circle;
+    end
     ball_rgb = uint8(round(ball * 255));
     ball_rgb = cat(3, ball_rgb, ball_rgb, ball_rgb);
 
@@ -101,6 +98,15 @@ function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles)
     bx2 = bx1 + (x2 - x1);
 
     frame(y1:y2, x1:x2, :) = ball_rgb(by1:by2, bx1:bx2, :);
+end
+
+function frame = rotate_for_eye(frame, eye)
+    if strcmp(eye, 'left')
+        frame = flip(frame, 2);    % invert x axis: position 0 → rightmost
+        frame = rot90(frame, -1);   % +90° CCW
+    elseif strcmp(eye, 'right')
+        frame = rot90(frame, 1);  % -90° CW
+    end
 end
 
 function payload = rgb565_payload(img)

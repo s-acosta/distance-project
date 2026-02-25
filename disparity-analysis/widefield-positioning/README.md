@@ -26,8 +26,14 @@ python -m venv .venv
 # Activate — Mac / Linux:
 source .venv/bin/activate
 
-# Activate — Windows:
-.venv\Scripts\activate
+# Activate — Windows (Git Bash):
+source .venv/Scripts/activate
+
+# Activate — Windows (Command Prompt):
+# .venv\Scripts\activate
+
+# Activate — Windows (PowerShell):
+# .venv\Scripts\Activate.ps1
 ```
 
 ### 3. Install dependencies
@@ -39,7 +45,10 @@ pip install -r requirements.txt
 
 ```bash
 # Activate the venv first (every session)
-source .venv/bin/activate
+# Git Bash on Windows:
+source .venv/Scripts/activate
+# Mac / Linux:
+# source .venv/bin/activate
 
 # Run — only argument is the folder containing .tif frames
 python analyze_positions.py /path/to/tiff/folder

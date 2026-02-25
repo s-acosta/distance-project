@@ -113,7 +113,7 @@ def main():
         f0_sum   = np.zeros((H, W), dtype=np.float64)
         f0_count = 0
 
-        for rep in range(n_repeats):
+        for rep in tqdm(range(n_repeats), desc="F0 (repeats)", total=n_repeats):
             for trial in range(stim_on.shape[1]):
                 stim_start = int(round(stim_on[rep, trial] * FS))
                 bl_start   = max(stim_start - baseline_frames, 0)

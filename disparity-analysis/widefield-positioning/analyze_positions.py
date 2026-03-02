@@ -6,10 +6,12 @@ otherwise falls back to positions.csv + position_order.csv from the
 stim-generation/ folder next to this script.
 
 Usage:
-    python analyze_positions.py /path/to/tiff/folder
+    python analyze_positions.py /path/to/tiff/folder [--f0-method {median,mean}]
+                                                      [--baseline-mode {local,global}]
+                                                      [--positions PX [PX ...]]
 
 Output:
-    <image_dir>/output/preprocessing.npz
+    <image_dir>/output/preprocessing_<f0method>_<baselinemode>.npz
     <image_dir>/output/position_responses.png
 """
 
@@ -42,12 +44,32 @@ def main():
         type=Path,
         help="Folder containing the .tif frame files.",
     )
+    parser.add_argument(
+        "--f0-method",
+        choices=["median", "mean"],
+        default="median",
+        help="How to compute the global F0 baseline image (default: median).",
+    )
+    parser.add_argument(
+        "--baseline-mode",
+        choices=["local", "global"],
+        default="local",
+        help="Trial baseline: 'local' uses per-trial F0, 'global' uses session-wide F0 (default: local).",
+    )
+    parser.add_argument(
+        "--positions",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="PX",
+        help="Override stimulus positions in pixels, e.g. --positions 0 20 40 60 80.",
+    )
     args = parser.parse_args()
 
     IMAGE_DIR  = args.image_dir.resolve()
     OUTPUT_DIR = IMAGE_DIR / "output"
     OUTPUT_DIR.mkdir(exist_ok=True)
-    npz_path = OUTPUT_DIR / "preprocessing.npz"
+    npz_path = OUTPUT_DIR / f"preprocessing_{args.f0_method}_{args.baseline_mode}.npz"
 
     if npz_path.exists():
         print(f"Loading cached results from {npz_path}")
@@ -84,6 +106,10 @@ def main():
                 for rep in range(n_repeats)
             ])
 
+        if args.positions is not None:
+            positions = np.array(args.positions, dtype=float)
+            print(f"Positions overridden to: {positions}")
+
         n_positions     = len(positions)
         on_frames       = int(round(on_time * FS))
         baseline_frames = int(round(BASELINE_DUR * FS))
@@ -109,23 +135,37 @@ def main():
             return np.stack(frames, axis=-1)
 
         # ── Compute global F0 ─────────────────────────────────────────────────
-        print("Computing global F0 ...")
-        f0_sum   = np.zeros((H, W), dtype=np.float64)
-        f0_count = 0
-
-        for rep in tqdm(range(n_repeats), desc="F0 (repeats)", total=n_repeats):
-            for trial in range(stim_on.shape[1]):
-                stim_start = int(round(stim_on[rep, trial] * FS))
-                bl_start   = max(stim_start - baseline_frames, 0)
-                chunk      = _read_block(bl_start, stim_start)
-                f0_sum    += chunk.sum(axis=-1)
-                f0_count  += chunk.shape[-1]
-
-        f0 = (f0_sum / f0_count).astype(np.float32)
-        print(f"F0 shape: {f0.shape}  ({f0_count} blank frames averaged)")
+        print(f"Computing global F0 ({args.f0_method}) ...")
+        if args.f0_method == "mean":
+            f0_sum   = np.zeros((H, W), dtype=np.float64)
+            f0_count = 0
+            for rep in tqdm(range(n_repeats), desc="F0 (repeats)"):
+                for trial in range(stim_on.shape[1]):
+                    stim_start = int(round(stim_on[rep, trial] * FS))
+                    bl_start   = max(stim_start - baseline_frames, 0)
+                    bl_end     = min(stim_start, n_frames)
+                    if bl_start < bl_end:
+                        chunk      = _read_block(bl_start, bl_end)
+                        f0_sum    += chunk.sum(axis=-1)
+                        f0_count  += chunk.shape[-1]
+            f0 = (f0_sum / f0_count).astype(np.float32)
+            print(f"F0 shape: {f0.shape}  ({f0_count} blank frames averaged)")
+        else:  # median
+            blank_chunks = []
+            for rep in tqdm(range(n_repeats), desc="F0 (repeats)"):
+                for trial in range(stim_on.shape[1]):
+                    stim_start = int(round(stim_on[rep, trial] * FS))
+                    bl_start   = max(stim_start - baseline_frames, 0)
+                    bl_end     = min(stim_start, n_frames)
+                    if bl_start < bl_end:
+                        blank_chunks.append(_read_block(bl_start, bl_end))
+            all_blank = np.concatenate(blank_chunks, axis=-1)
+            f0 = np.median(all_blank, axis=-1).astype(np.float32)
+            print(f"F0 shape: {f0.shape}  (median of {all_blank.shape[-1]} blank frames)")
+            del all_blank, blank_chunks
 
         # ── Extract per-position responses ────────────────────────────────────
-        print("Extracting per-position responses ...")
+        print(f"Extracting per-position responses (baseline: {args.baseline_mode}) ...")
         f0_3d          = f0[:, :, np.newaxis]
         response_accum = np.zeros((n_positions, H, W, on_frames), dtype=np.float64)
         response_count = np.zeros(n_positions, dtype=int)
@@ -138,7 +178,15 @@ def main():
                     continue
 
                 stim_block = _read_block(stim_start, stim_end)
-                dff        = (stim_block - f0_3d) / f0_3d * 100
+
+                if args.baseline_mode == "local":
+                    bl_start    = max(stim_start - baseline_frames, 0)
+                    blank_block = _read_block(bl_start, stim_start)
+                    trial_f0    = blank_block.mean(axis=-1, keepdims=True)
+                else:
+                    trial_f0 = f0_3d
+
+                dff = (stim_block - trial_f0) / trial_f0 * 100
 
                 pos_idx = int(position_order[rep, trial]) - 1
                 response_accum[pos_idx] += dff
@@ -168,8 +216,8 @@ def main():
     pos_deg     = -25 + (positions / 240) * (120 - (-25))
 
     mean_maps = position_responses.mean(axis=-1)
-    vmin = np.percentile(mean_maps, 1)
-    vmax = np.percentile(mean_maps, 99)
+    vmin = np.percentile(mean_maps, 0.5)
+    vmax = np.percentile(mean_maps, 99.5)
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows))
     axes = np.array(axes).ravel()

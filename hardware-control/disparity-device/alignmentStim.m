@@ -21,18 +21,19 @@ arguments
     opts.eye       (1,1) string  = "none"        % eye orientation: "none", "left" (+90°), "right" (-90°)
     opts.preview   (1,1) logical = false
     opts.bw        (1,1) logical = false         % black background, white balls
+    opts.brightness(1,1) double  = 1.0           % overall luminance scale (0=black, 1=full brightness)
 end
 
 %% Build frame with two balls
 if opts.bw
     frame = uint8(zeros(opts.H, opts.W, 3));
 else
-    frame = uint8(ones(opts.H, opts.W, 3) * 127);
+    frame = uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness));
 end
 if opts.stim_size > 0
     for i = 1:length(opts.positions)
         frame = place_ball(frame, opts.positions(i), opts.stim_size, ...
-            opts.W, opts.H, opts.rcycles, opts.tcycles, opts.bw);
+            opts.W, opts.H, opts.rcycles, opts.tcycles, opts.bw, opts.brightness);
     end
 end
 frame = rotate_for_eye(frame, opts.eye);
@@ -44,6 +45,7 @@ fprintf('Ball size: %d pixels\n', opts.stim_size);
 if opts.bw
     fprintf('Mode: B&W (white balls, black background)\n');
 end
+fprintf('Brightness: %.2f\n', opts.brightness);
 if opts.preview
     fprintf('MODE: PREVIEW (screen only)\n');
 else
@@ -70,7 +72,7 @@ end
 
 end
 
-function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles, bw)
+function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles, bw, brightness)
     xylim = pi * rcycles;
     [xg, yg] = meshgrid(linspace(-xylim, xylim, stim_size));
     circle = (xg.^2 + yg.^2) <= xylim^2;
@@ -81,7 +83,7 @@ function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles, bw)
         checksN = (1 + sign(sin(at * tcycles) + eps) .* sign(sin(sqrt(xg.^2 + yg.^2)))) / 2;
         ball = circle .* checksN + 0.5 * ~circle;
     end
-    ball_rgb = uint8(round(ball * 255));
+    ball_rgb = uint8(round(ball * 255 * brightness));
     ball_rgb = cat(3, ball_rgb, ball_rgb, ball_rgb);
 
     y_center = round(H / 2);

@@ -36,8 +36,11 @@ arguments
     opts.target_fps (1,1) double = 10
     opts.eye (1,1) string = "none"                             % eye orientation: "none", "left" (+90°), "right" (-90°)
     opts.DAQ_flag (1,1) logical = false
+    opts.scope (1,1) string = 'widefield'
     opts.verbose (1,1) logical = true
     opts.preview (1,1) logical = false
+    opts.brightness (1,1) double = 1.0                         % overall luminance scale (0=black, 1=full brightness)
+    opts.bw (1,1) logical = false                              % black background, solid white ball
 end
 
 n_positions = length(opts.positions);
@@ -48,7 +51,11 @@ if opts.verbose
     fprintf('Pre-computing %d ball frames...\n', n_positions);
 end
 
-gray_frame = uint8(ones(opts.H, opts.W, 3) * 127);
+if opts.bw
+    gray_frame = uint8(zeros(opts.H, opts.W, 3));
+else
+    gray_frame = uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness));
+end
 gray_frame   = rotate_for_eye(gray_frame, opts.eye);
 gray_payload = rgb565_payload(gray_frame);
 
@@ -57,7 +64,7 @@ ball_frames = cell(1, n_positions);
 ball_payloads = cell(1, n_positions);
 for i = 1:n_positions
     ball_frames{i} = make_ball_frame(opts.positions(i), opts.stim_size, ...
-        opts.W, opts.H, opts.rcycles, opts.tcycles);
+        opts.W, opts.H, opts.rcycles, opts.tcycles, opts.bw, opts.brightness);
     ball_frames{i} = rotate_for_eye(ball_frames{i}, opts.eye);
     ball_payloads{i} = rgb565_payload(ball_frames{i});
 end
@@ -78,6 +85,10 @@ if opts.verbose
     fprintf('Total duration: %.2f s (%.2f min)\n', total_dur, total_dur/60);
     fprintf('Target FPS: %.2f\n', opts.target_fps);
     fprintf('Eye orientation: %s\n', opts.eye);
+    fprintf('Brightness: %.2f\n', opts.brightness);
+    if opts.bw
+        fprintf('Mode: B&W (solid white ball, black background)\n');
+    end
     if opts.preview
         fprintf('MODE: PREVIEW (screen only, no Teensy)\n');
     else
@@ -98,9 +109,17 @@ if opts.preview
 else
 
     if opts.DAQ_flag
-        % Initialize DAQ triggering
-        wf = WidefieldTriggerer(opts.DAQ_flag);
-        wf.initialize(total_dur);
+
+        if strcmp(opts.scope, 'widefield')
+            wf = WidefieldTriggerer(opts.DAQ_flag);
+            wf.initialize(total_dur);
+        elseif strcmp(opts.scope, '2p')
+            DAQ = daq('ni');
+            DAQ.addoutput('Dev1', 'ao0', 'Voltage');
+            DAQ.write(0);
+            fprintf('2P DAQ initialized\n');
+        end
+
     end
 
     % Open serial
@@ -128,12 +147,17 @@ if opts.verbose && ~opts.preview
     pause();
 end
 
+if ~opts.preview && opts.DAQ_flag
+    if strcmp(opts.scope, 'widefield')
+        wf.start();
+    elseif strcmp(opts.scope, '2p')
+        DAQ.write(5);
+        fprintf('2P DAQ started\n');
+    end
+end
+
 % Start timing and trigger DAQ
 experiment_start = tic;
-
-if ~opts.preview && opts.DAQ_flag
-    wf.start();
-end
 
 if opts.verbose
     fprintf('Starting experiment...\n\n');
@@ -232,7 +256,12 @@ if opts.preview
     title(ax, 'Done');
     drawnow;
 else
-    wf.finish();
+    if strcmp(opts.scope, 'widefield')
+        wf.finish();
+    elseif strcmp(opts.scope, '2p')
+        DAQ.write(0);
+        fprintf('2P DAQ stopped\n');
+    end
     clear s;
 end
 
@@ -261,21 +290,31 @@ Stimdata.eye            = opts.eye;
 end
 
 %% Helper functions
-function frame = make_ball_frame(x_pos, stim_size, W, H, rcycles, tcycles)
-% Build radial checkerboard ball at position (x_pos, H/2) on gray background.
-% Math reused from generate_leftright_stim.m lines 62-69.
+function frame = make_ball_frame(x_pos, stim_size, W, H, rcycles, tcycles, bw, brightness)
+% Build ball at position (x_pos, H/2).
+% bw=true: solid white ball on black background.
+% bw=false: radial checkerboard on gray background.
+% brightness: global luminance scale (0=black, 1=full brightness); preserves Michelson contrast.
 
     xylim = pi * rcycles;
     [xg, yg] = meshgrid(linspace(-xylim, xylim, stim_size));
-    at = atan2(yg, xg);
-    checksN = (1 + sign(sin(at * tcycles) + eps) .* sign(sin(sqrt(xg.^2 + yg.^2)))) / 2;
     circle = (xg.^2 + yg.^2) <= xylim^2;
-    ball = circle .* checksN + 0.5 * ~circle;
-    ball_rgb = uint8(round(ball * 255));
+    if bw
+        ball = double(circle);
+    else
+        at = atan2(yg, xg);
+        checksN = (1 + sign(sin(at * tcycles) + eps) .* sign(sin(sqrt(xg.^2 + yg.^2)))) / 2;
+        ball = circle .* checksN + 0.5 * ~circle;
+    end
+    ball_rgb = uint8(round(ball * 255 * brightness));
     ball_rgb = cat(3, ball_rgb, ball_rgb, ball_rgb);
 
-    % Gray background
-    frame = uint8(ones(H, W, 3) * 127);
+    % Background
+    if bw
+        frame = uint8(zeros(H, W, 3));
+    else
+        frame = uint8(ones(H, W, 3) * round(127 * brightness));
+    end
     y_center = round(H / 2);
     half = floor(stim_size / 2);
 
@@ -298,7 +337,7 @@ function frame = rotate_for_eye(frame, eye)
     if strcmp(eye, 'right')
         frame = flip(frame, 2);    % invert x axis: position 0 → rightmost
         frame = rot90(frame, 1);   % +90° CCW
-    elseif strcmp(eye, 'leftt')
+    elseif strcmp(eye, 'left')
         frame = rot90(frame, -1);  % -90° CW
     end
 end

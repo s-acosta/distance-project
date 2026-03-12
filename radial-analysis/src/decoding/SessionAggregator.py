@@ -15,8 +15,6 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 
 from src.data.RadialDevice import RadialDevice
 from src.workflows import load_dataframe
-from src.viz.SessionVisualizer import SessionVisualizer
-
 
 class SessionAggregator:
     """
@@ -80,6 +78,9 @@ class SessionAggregator:
         self._trial_info: Dict[str, Dict] = {}
         self._df: Optional[pd.DataFrame] = None
         self._target_length: Optional[int] = None
+        self._start_angle: Optional[float] = None
+        self._end_angle: Optional[float] = None
+        self._distances: Optional[np.ndarray] = None
 
         # Try to load from cache first
         if not force_recompute and self._load_cache():
@@ -121,6 +122,16 @@ class SessionAggregator:
         return []
 
     @property
+    def angle_axis(self) -> np.ndarray:
+        """Angle in degrees for each position, shape (n_positions,)."""
+        return np.linspace(self._start_angle, self._end_angle, self._target_length)
+
+    @property
+    def distances(self) -> np.ndarray:
+        """Unique stimulus distances (excluding control), sorted ascending."""
+        return self._distances
+
+    @property
     def cache_path(self) -> str:
         """Default cache path."""
         return os.path.join(
@@ -128,6 +139,33 @@ class SessionAggregator:
             f'{self.mouse_name}_{self.experiment_name}',
             f'{self.mouse_name}_{self.experiment_name}_aggregated.pkl'
         )
+
+    def resolve_session(self, session):
+        """Resolve session argument to a full session name string.
+
+        Parameters
+        ----------
+        session : str, int, or None
+            Full session name, or an integer N that matches the session whose
+            name contains the token '_N_'
+            (e.g. 9 → '251217_SAM043_tiling_9_120um').
+
+        Returns
+        -------
+        str or None
+        """
+        if session is None or isinstance(session, str):
+            return session
+        token = f'_{int(session)}_'
+        matches = [s for s in self.trial_info if token in s]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) == 0:
+            raise ValueError(
+                f"No session containing '{token}' found. "
+                f"Available: {list(self.trial_info.keys())}"
+            )
+        raise ValueError(f"Ambiguous session number {session}: matched {matches}")
 
     def _build_traces(self):
         """Load and aggregate traces from all sessions."""
@@ -141,21 +179,7 @@ class SessionAggregator:
             base_multi_session_dir=self.multi_session_dir
         )
 
-        # Filter for reliable cells if requested
-        if self.reliable_only:
-            viz = SessionVisualizer(
-                multi_df,
-                mouse_name=self.mouse_name,
-                experiment_name=self.experiment_name
-            )
-            self._df = viz.filter_by_reliability(
-                multi_df,
-                reliable_type='reliable',
-                threshold=self.reliability_threshold
-            )
-            print(f"Filtered to {len(self._df)} reliable cells (from {len(multi_df)} total)")
-        else:
-            self._df = multi_df
+        self._df = multi_df
 
         # First pass: determine minimum trace length across all sessions
         min_length = float('inf')
@@ -175,6 +199,10 @@ class SessionAggregator:
             # Check trace length from first cell, first trial
             sample_trace = device.get_on_trace(0, 0)
             min_length = min(min_length, len(sample_trace))
+
+            # Capture angle range (common across sessions); force scalar
+            self._start_angle = float(np.asarray(device.start_angle).flat[0])
+            self._end_angle   = float(np.asarray(device.end_angle).flat[0])
 
         self._target_length = int(min_length)
         print(f"Normalizing traces to {self._target_length} positions")
@@ -221,6 +249,10 @@ class SessionAggregator:
 
         print(f"[ok] Built traces for {len(self._traces)} cells")
 
+        # Derive unique stimulus distances (exclude control condition = 4)
+        all_dists = np.concatenate([info['distances'] for info in self._trial_info.values()])
+        self._distances = np.unique(all_dists[all_dists != 4])
+
     def _save_cache(self):
         """Save traces to cache."""
         cache_data = {
@@ -228,11 +260,12 @@ class SessionAggregator:
             'trial_info': self._trial_info,
             'df': self._df,
             'target_length': self._target_length,
+            'start_angle': self._start_angle,
+            'end_angle': self._end_angle,
+            'distances': self._distances,
             'metadata': {
                 'mouse_name': self.mouse_name,
                 'experiment_name': self.experiment_name,
-                'reliability_threshold': self.reliability_threshold,
-                'reliable_only': self.reliable_only
             }
         }
 
@@ -250,17 +283,18 @@ class SessionAggregator:
             with open(self.cache_path, 'rb') as f:
                 cache_data = pickle.load(f)
 
-            # Verify cache matches current parameters
-            meta = cache_data.get('metadata', {})
-            if (meta.get('reliability_threshold') != self.reliability_threshold or
-                meta.get('reliable_only') != self.reliable_only):
-                print("Cache parameters don't match, recomputing...")
+            # Invalidate old caches that lack angle/distance info
+            if 'start_angle' not in cache_data:
+                print("Cache missing angle/distance info, recomputing...")
                 return False
 
             self._traces = cache_data['traces']
             self._trial_info = cache_data['trial_info']
             self._df = cache_data['df']
             self._target_length = cache_data['target_length']
+            self._start_angle = cache_data['start_angle']
+            self._end_angle = cache_data['end_angle']
+            self._distances = cache_data['distances']
             return True
         except Exception as e:
             print(f"Failed to load cache: {e}")
@@ -283,11 +317,12 @@ class SessionAggregator:
                 'trial_info': self._trial_info,
                 'df': self._df,
                 'target_length': self._target_length,
+                'start_angle': self._start_angle,
+                'end_angle': self._end_angle,
+                'distances': self._distances,
                 'metadata': {
                     'mouse_name': self.mouse_name,
                     'experiment_name': self.experiment_name,
-                    'reliability_threshold': self.reliability_threshold,
-                    'reliable_only': self.reliable_only
                 }
             }
             with open(path, 'wb') as f:
@@ -321,20 +356,32 @@ class SessionAggregator:
             self._trial_info = cache_data['trial_info']
             self._df = cache_data['df']
             self._target_length = cache_data['target_length']
+            self._start_angle = cache_data.get('start_angle')
+            self._end_angle = cache_data.get('end_angle')
+            self._distances = cache_data.get('distances')
             return True
         except Exception as e:
             print(f"Failed to load cache: {e}")
             return False
 
     def _get_cell_indices(self, area: str = None) -> List[int]:
-        """Get DataFrame indices for cells matching area filter."""
-        if area is None:
-            return list(self._df.index)
+        """Get DataFrame indices for cells matching area and reliability filters."""
+        df = self._df
 
-        if 'area' not in self._df.columns:
-            raise ValueError("Area filtering requires 'area' column in DataFrame")
+        if self.reliable_only:
+            df = df[
+                (df['monocular'].apply(lambda x: x['reliable']) == True) &
+                (df['binocular'].apply(lambda x: x['reliable']) == True) &
+                ((df['monocular'].apply(lambda x: x['reliable_corr']) >= self.reliability_threshold) |
+                 (df['binocular'].apply(lambda x: x['reliable_corr']) >= self.reliability_threshold))
+            ]
 
-        return list(self._df[self._df['area'] == area].index)
+        if area is not None:
+            if 'area' not in df.columns:
+                raise ValueError("Area filtering requires 'area' column in DataFrame")
+            df = df[df['area'] == area]
+
+        return list(df.index)
 
     def _get_trial_mask(
         self,
@@ -557,6 +604,7 @@ class SessionAggregator:
             cell_indices = self._filter_modulated_cells(cell_indices, modulation_type)
 
         # Filter by session if specified
+        session = self.resolve_session(session)
         if session is not None:
             if session not in self._trial_info:
                 available = list(self._trial_info.keys())

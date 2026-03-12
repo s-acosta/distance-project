@@ -16,7 +16,8 @@ class RadialDevice:
 
     def __init__(self, data_dir=None, response_mode='spikes', tau=None,
                  mouse_name=None, record_date=None, experiment_name=None,
-                 base_data_dir=r'D:/data-distance-coding-project/processed-data'):
+                 base_data_dir=r'D:/data-distance-coding-project/processed-data',
+                 verbose=False):
         """
         Initialize RadialDevice.
 
@@ -41,6 +42,8 @@ class RadialDevice:
             Base directory for processed data (only used with session info)
         """
 
+        self.verbose = verbose
+
         # Build data_dir from session info if provided
         if data_dir is None and all([mouse_name, record_date, experiment_name]):
             self.mouse_name = mouse_name
@@ -48,7 +51,8 @@ class RadialDevice:
             self.experiment_name = experiment_name
             self.session_name = f'{record_date}_{mouse_name}_{experiment_name}'
             data_dir = os.path.join(base_data_dir, self.session_name)
-            print(f"[ok] Loading session: {self.session_name}")
+            if self.verbose:
+                print(f"[ok] Loading session: {self.session_name}")
         elif data_dir is None:
             raise ValueError(
                 "Must provide either:\n"
@@ -95,7 +99,8 @@ class RadialDevice:
         elif len(filelist) > 1:
             raise Exception('More than one stimulus file found')
         else:
-            print('Stimulus file found')
+            if self.verbose:
+                print('Stimulus file found')
             return io.loadmat(self.stimulus_dir + '/' + str(filelist[0]))
 
     def _load_stimulus_variables(self):
@@ -132,7 +137,8 @@ class RadialDevice:
             self.dFF = D.dFF
             self.spikes = D.spikes
             self.suite2p_id = D.suite2p_id
-            print("Successfully loaded activity data")
+            if self.verbose:
+                print("Successfully loaded activity data")
         except Exception as e:
             print(f"Error loading activity data: {e}")
             raise
@@ -152,13 +158,15 @@ class RadialDevice:
             frame_counts[length] = frame_counts.get(length, 0) + 1
 
         # Print the distribution of frame lengths
-        print("Repeat stimulus on length distribution:")
-        for length, count in sorted(frame_counts.items()):
-            print(f"    {count} repeats have length {length}")
+        if self.verbose:
+            print("Repeat stimulus on length distribution:")
+            for length, count in sorted(frame_counts.items()):
+                print(f"    {count} repeats have length {length}")
 
         # set the on length to the shortest length
         self.on_length = min(frame_counts.keys())
-        print(f'Set stimulus on length: {self.on_length}')
+        if self.verbose:
+            print(f'Set stimulus on length: {self.on_length}')
         self.angle_range = np.linspace(self.start_angle, self.end_angle, int(self.on_length))
 
     def get_on_times(self, repeat):

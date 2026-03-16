@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 from scipy.special import logsumexp, softmax
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import StratifiedKFold, KFold, LeaveOneOut
-from matplotlib.gridspec import GridSpec
 
 
 def _resolve_session(agg, session):
@@ -666,270 +665,90 @@ class FactoredMLE:
                 np.array(a_true), np.array(d_true))
 
     @staticmethod
-    def joint_prediction(angle_dist_log_like):
-        """Predicted angle and distance indices from the joint argmax.
+    def plot_distance_results(bino_res, mono_res, title=''):
+        """Distance decoding summary: accuracy by position (row 1) and confusion matrices by angle range (row 2).
+
+        Row 1 : single plot with both conditions overlaid showing distance
+                classification accuracy vs angle position, with SEM band across repeats.
+        Row 2 : confusion matrices — rows = condition (bino / mono), cols = angle range.
 
         Parameters
         ----------
-        angle_dist_log_like : (n_positions, n_distances)
-
-        Returns
-        -------
-        pred_angle_idx    : int
-        pred_distance_idx : int
-        """
-        pred_angle_idx, pred_distance_idx = np.unravel_index(
-            angle_dist_log_like.argmax(), angle_dist_log_like.shape
-        )
-        return int(pred_angle_idx), int(pred_distance_idx)
-
-    @staticmethod
-    def distance_prediction(dist_log_like):
-        """Hard (argmax) and soft (expected value) distance index from a distance log-posterior.
-
-        dist_log_like is a (n_distances,) vector obtained by conditioning the score
-        matrix on the predicted angle::
-
-            dist_log_like = angle_dist_log_like[pred_angle_idx]
-
-        or by summing such vectors across positions (pooled levels).
-
-        Parameters
-        ----------
-        dist_log_like : (n_distances,)
-
-        Returns
-        -------
-        pred_distance_hard : int    argmax distance index
-        pred_distance_soft : float  softmax-weighted expected distance index
-        """
-        pred_distance_hard = int(np.argmax(dist_log_like))
-        pred_distance_soft = float(np.dot(softmax(dist_log_like), np.arange(len(dist_log_like))))
-        return pred_distance_hard, pred_distance_soft
-
-    @staticmethod
-    def prediction_entropy(dist_log_like):
-        """Shannon entropy of a distance log-posterior (nats). Higher = less confident.
-
-        Parameters
-        ----------
-        dist_log_like : (n_distances,)  same input as distance_prediction
-
-        Returns
-        -------
-        dist_entropy : float
-        """
-        p = softmax(dist_log_like)
-        return float(-np.sum(p * np.log(p + 1e-12)))
-
-    @staticmethod
-    def build_training_templates(neural_data, train_indices, trial_distances):
-        """Condition-averaged templates from a set of training trials.
-
-        Parameters
-        ----------
-        neural_data     : (n_neurons, n_angles, n_trials)
-        train_indices   : array-like  indices into the trial axis for this CV fold
-        trial_distances : (n_trials,)  distance index per trial (0, 1, 2, 3)
-
-        Returns
-        -------
-        training_templates : (n_neurons, n_angles, n_distances)
-            Mean response per neuron × angle × distance condition.
-            Conditions with no training trials are left as zeros.
-        """
-        n_neurons, n_angles, _ = neural_data.shape
-        n_distances = int(trial_distances.max()) + 1
-        training_templates = np.zeros((n_neurons, n_angles, n_distances))
-        for d in range(n_distances):
-            mask = trial_distances[train_indices] == d
-            if mask.sum() == 0:
-                continue
-            training_templates[:, :, d] = neural_data[:, :, train_indices[mask]].mean(axis=2)
-        return training_templates
-
-    @staticmethod
-    def build_noise_variance(neural_data, train_indices, trial_distances):
-        """Per-neuron noise variance estimated from training trials.
-
-        For each neuron, computes the mean squared residual from the condition mean,
-        pooled across all distance conditions.
-
-        Parameters
-        ----------
-        neural_data     : (n_neurons, n_angles, n_trials)
-        train_indices   : fold training indices
-        trial_distances : (n_trials,)  distance index per trial (0, 1, 2, 3)
-
-        Returns
-        -------
-        sigma2 : (n_neurons,)  one variance estimate per neuron
-        """
-        n_distances = int(trial_distances.max()) + 1
-        sq_resid = []
-        for d in range(n_distances):
-            mask = trial_distances[train_indices] == d
-            if mask.sum() < 2:
-                continue
-            trials    = neural_data[:, :, train_indices[mask]]   # (n_neurons, n_angles, k)
-            cond_mean = trials.mean(axis=2, keepdims=True)
-            sq_resid.append(((trials - cond_mean) ** 2).mean(axis=(1, 2)))
-        return np.stack(sq_resid).mean(axis=0) + 1e-10           # (n_neurons,)
-
-    @staticmethod
-    def _decode_trial_positions(decoder, trial_response, n_positions):
-        """Decode angle and distance at every position for one trial.
-
-        For each position calls decoder.decode to get the full (n_positions, n_distances)
-        log-likelihood grid, then marginalises over angles via logsumexp to obtain a proper
-        distance log-likelihood vector used for downstream pooling and entropy.
-
-        Parameters
-        ----------
-        decoder        : FactoredMLE  fitted decoder
-        trial_response : (n_neurons, n_positions)
-        n_positions    : int
-
-        Returns
-        -------
-        pred_angle_idx_by_position               : (n_positions,)
-        pred_distance_idx_by_position            : (n_positions,)
-        dist_entropy_by_position                 : (n_positions,)
-        dist_marginal_log_like_by_position  : dict[int -> (n_distances,)]  (marginalised over angles)
-        """
-        pred_angle_idx_by_position    = np.zeros(n_positions, dtype=int)
-        pred_distance_idx_by_position = np.zeros(n_positions, dtype=int)
-        dist_entropy_by_position      = np.zeros(n_positions)
-        dist_log_like_at_pred_angle_by_position = {}
-
-        for pos in range(n_positions):
-            pred_angle_idx, pred_distance_idx, angle_dist_log_like = decoder.decode(trial_response[:, pos])
-            # Marginalise over all angle positions to get a proper distance log-likelihood.
-            # logsumexp(axis=0) is equivalent to log ∑_a exp(scores[a, d]) for each d.
-            dist_log_like = logsumexp(angle_dist_log_like, axis=0)
-
-            pred_angle_idx_by_position[pos]    = pred_angle_idx
-            pred_distance_idx_by_position[pos] = int(np.argmax(dist_log_like))
-            dist_entropy_by_position[pos]      = FactoredMLE.prediction_entropy(dist_log_like)
-            dist_log_like_at_pred_angle_by_position[pos] = dist_log_like
-
-        return (pred_angle_idx_by_position,
-                pred_distance_idx_by_position,
-                dist_entropy_by_position,
-                dist_log_like_at_pred_angle_by_position)
-
-    @staticmethod
-    def plot_distance_results(pooled_res, per_pos_res=None, title=''):
-        """Plot distance decoding results: confusion matrices by angle range (top row)
-        and distance MAE / accuracy by angle position (bottom row).
-
-        Parameters
-        ----------
-        pooled_res  : dict  output of cross_validate_pooled
-        per_pos_res : dict or None  output of cross_validate_per_position.
-                      If provided, adds MAE/accuracy-by-angle bottom row.
-                      If None (or if pooled_res already contains per-pos keys), bottom row is skipped.
-        title       : str  optional figure suptitle
+        bino_res : dict  output of FactoredMLE.cross_validate_averaged (binocular)
+        mono_res : dict  output of FactoredMLE.cross_validate_averaged (monocular)
+        title    : str   optional figure suptitle
 
         Returns
         -------
         matplotlib.figure.Figure
         """
-        # backward compat: old-style combined dict has angle_by at top level
-        if per_pos_res is None and 'angle_by' in pooled_res:
-            per_pos_res = pooled_res
-
-        distances     = pooled_res['distances']
-        range_results = pooled_res['range_results']
-        n_ranges    = len(range_results)
-        n_distances = len(distances)
-
-        has_per_pos = per_pos_res is not None
-        if has_per_pos:
-            deg_axis = per_pos_res['deg_axis']
-            n_pos    = len(deg_axis)
-            angle_by = per_pos_res['angle_by']
-            d_c_by_a = per_pos_res['d_pred_cont_by_angle']
-            d_t_by_a = per_pos_res['d_true_by_angle']
-            d_h_by_a = per_pos_res['d_pred_hard_by_angle']
-
+        angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
         range_colors = ['firebrick', 'mediumpurple', 'steelblue']
-        range_cmaps  = ['Reds',      'Purples',      'Blues'     ]
+        range_cmaps  = ['Reds',      'Purples',      'Blues'    ]
+        cond_colors  = ['steelblue', 'firebrick']
+        cond_labels  = ['Binocular', 'Monocular']
 
-        n_rows = 2 if has_per_pos else 1
-        fig = plt.figure(figsize=(5 * n_ranges, 9 if has_per_pos else 5))
-        gs  = GridSpec(n_rows, 2 * n_ranges, figure=fig, hspace=0.45, wspace=0.35)
+        angle_axis  = bino_res['angle_axis']
+        distances   = bino_res['distances']
+        n_distances = len(distances)
+        n_repeats   = bino_res['pred_dist'].shape[0]
+        chance      = 100 / n_distances
 
-        # --- Top row: one confusion matrix per angle range ---
-        for i, (rname, rres) in enumerate(range_results.items()):
-            color = range_colors[i % len(range_colors)]
-            cmap  = range_cmaps[i % len(range_cmaps)]
-            ax = fig.add_subplot(gs[0, 2*i:2*i+2])
-            cm = confusion_matrix(rres['d_true'], rres['d_pred_hard'],
-                                  labels=list(range(n_distances)), normalize='true')
-            ConfusionMatrixDisplay(cm, display_labels=[f'd={d}' for d in distances]
-                                   ).plot(ax=ax, colorbar=False, cmap=cmap)
-            accs = rres.get('dist_accs') or [rres.get('dist_acc', np.nan)]
-            maes = rres.get('dist_maes_cont') or [rres.get('dist_mae_cont', np.nan)]
-            ax.set_title(f'{rname}\nacc={np.mean(accs):.1f}%  MAE={np.mean(maes):.3f}',
-                         color=color)
+        fig, axes = plt.subplot_mosaic(
+            [['top', 'top', 'top'],
+             ['b0',  'b1',  'b2' ],
+             ['m0',  'm1',  'm2' ]],
+            figsize=(15, 15),
+            gridspec_kw={'height_ratios': [1.5, 1, 1], 'hspace': 0.5, 'wspace': 0},
+        )
 
-        # --- Bottom row: MAE by angle + accuracy by angle (only if per_pos_res provided) ---
-        if has_per_pos:
-            ax_mae = fig.add_subplot(gs[1, :n_ranges])
-            ax_acc = fig.add_subplot(gs[1, n_ranges:])
+        # ── Row 0: accuracy by angle position (both conditions on one plot) ──
+        ax = axes['top']
+        for res, color, label in zip([bino_res, mono_res], cond_colors, cond_labels):
+            pred = res['pred_dist']   # (n_repeats, n_distances, n_positions)
+            true = res['true_dist']   # (n_distances, n_positions)
 
-            for ax_bot in (ax_mae, ax_acc):
-                for i, rname in enumerate(range_results):
-                    lo_str, hi_str = rname[1:-1].replace('°', '').split(', ')
-                    ax_bot.axvspan(float(lo_str), float(hi_str),
-                                   color=range_colors[i % len(range_colors)], alpha=0.2, zorder=0)
+            acc_per_rep = (pred == true[np.newaxis]).mean(axis=1) * 100
+            acc_mean    = acc_per_rep.mean(axis=0)
+            acc_sem     = acc_per_rep.std(axis=0) / np.sqrt(n_repeats)
 
-            repeat_by = per_pos_res.get('repeat_by')
-            if repeat_by is not None:
-                rep_ids = np.unique(repeat_by)
-                mae_per_rep = np.array([
-                    [np.abs(d_c_by_a[(angle_by == a) & (repeat_by == r)]
-                            - distances[d_t_by_a[(angle_by == a) & (repeat_by == r)]]).mean()
-                     for a in range(n_pos)]
-                    for r in rep_ids
-                ])
-                acc_per_rep = np.array([
-                    [(d_h_by_a[(angle_by == a) & (repeat_by == r)]
-                      == d_t_by_a[(angle_by == a) & (repeat_by == r)]).mean()
-                     for a in range(n_pos)]
-                    for r in rep_ids
-                ])
-                n_rep = len(rep_ids)
-                mae_mean, mae_std = mae_per_rep.mean(0), mae_per_rep.std(0) / np.sqrt(n_rep)
-                acc_mean, acc_std = acc_per_rep.mean(0), acc_per_rep.std(0) / np.sqrt(n_rep)
-            else:
-                mae_mean = np.array([np.abs(d_c_by_a[angle_by == a] - distances[d_t_by_a[angle_by == a]]).mean() for a in range(n_pos)])
-                acc_mean = np.array([(d_h_by_a[angle_by == a] == d_t_by_a[angle_by == a]).mean() for a in range(n_pos)])
-                mae_std = acc_std = None
+            ax.plot(angle_axis, acc_mean, color=color, linewidth=1.8, label=label)
+            ax.fill_between(angle_axis, acc_mean - acc_sem, acc_mean + acc_sem,
+                            color=color, alpha=0.2)
 
-            ax_mae.plot(deg_axis, mae_mean, color='black', linewidth=1.8)
-            if mae_std is not None:
-                ax_mae.fill_between(deg_axis, mae_mean - mae_std, mae_mean + mae_std,
-                                    color='black', alpha=0.2)
-            ax_mae.axhline(1.25, color='black', linestyle='--', linewidth=1,
-                           alpha=0.5, label=f'MAE chance ({1.25:.3f})')
-            ax_mae.set(xlabel='Angle (°)', ylabel='Distance MAE',
-                       title='Distance MAE by angle position')
-            ax_mae.legend(fontsize=9)
+        for i, (lo, hi) in enumerate(angle_ranges):
+            ax.axvspan(lo, hi, color=range_colors[i], alpha=0.08, zorder=0)
+        ax.axhline(chance, color='gray', linestyle=':', linewidth=1,
+                   label=f'Chance ({chance:.0f}%)')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+        ax.set(xlabel='Angle (°)', ylabel='Accuracy (%)', ylim=(0, 100))
+        ax.set_title('Distance accuracy by position', pad=25)
+        ax.legend(fontsize=12)
 
-            ax_acc.plot(deg_axis, acc_mean * 100, color='black', linewidth=1.8)
-            if acc_std is not None:
-                ax_acc.fill_between(deg_axis, (acc_mean - acc_std) * 100, (acc_mean + acc_std) * 100,
-                                    color='black', alpha=0.2)
-            ax_acc.axhline(25, color='gray', linestyle='--', linewidth=1, label='chance')
-            ax_acc.set(xlabel='Angle (°)', ylabel='Accuracy (%)',
-                       title='Distance accuracy by angle position')
-            ax_acc.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
-            ax_acc.legend(fontsize=9)
+        # ── Rows 1–2: confusion matrices (row=condition, col=range) ──────────
+        cm_keys = [['b0', 'b1', 'b2'], ['m0', 'm1', 'm2']]
+        for res, cond_label, keys in zip([bino_res, mono_res], cond_labels, cm_keys):
+            pred = res['pred_dist']   # (n_repeats, n_distances, n_positions)
+            true = res['true_dist']   # (n_distances, n_positions)
 
-        if title:
-            fig.suptitle(title, fontsize=20, y=1.01)
+            for col, ((lo, hi), color, cmap, key) in enumerate(zip(angle_ranges, range_colors, range_cmaps, keys)):
+                ax        = axes[key]
+                pos_mask  = (angle_axis >= lo) & (angle_axis < hi)
+                pred_flat = pred[:, :, pos_mask].ravel()
+                true_flat = np.tile(true[:, pos_mask][np.newaxis], (n_repeats, 1, 1)).ravel()
+
+                cm = confusion_matrix(true_flat, pred_flat, labels=distances, normalize='true')
+                disp = ConfusionMatrixDisplay(cm, display_labels=[f'{d}' for d in distances])
+                disp.plot(ax=ax, colorbar=False, cmap=cmap)
+                for text in disp.text_.ravel():
+                    text.set_text(f'{float(text.get_text()):.1f}' if text.get_text() else '')
+
+                acc = (pred_flat == true_flat).mean() * 100
+                ax.set_title(f'{cond_label}  {lo}° to {hi}°\nacc={acc:.1f}%', color=color)
+                if col > 0:
+                    ax.set_ylabel('')
+
+        fig.suptitle(title, fontsize=22, y=0.95)
         plt.tight_layout()
         return fig
 
@@ -1397,8 +1216,7 @@ class FactoredMLE:
         plt.tight_layout()
         return fig
 
-    @staticmethod
-    def decode_distance_continuous(scores, dist_values):
+
         """Soft distance estimate via Bayesian marginalisation over angle positions.
 
         Parameters
@@ -1415,57 +1233,44 @@ class FactoredMLE:
         return float(np.dot(p_d, dist_values))
 
     @staticmethod
-    def cross_validate_averaged(agg, monocular, area=None, n_repeats=10, cell_idx=None,
-                                angle_ranges=None):
+    def cross_validate_averaged(agg, monocular, area=None, n_repeats=10, cell_idx=None, verbose=True):
         """Cross-validated FactoredMLE on condition-averaged data.
 
-        For every frame (angle position) and every distance condition, decodes
-        both distance and angle.
+        For every (angle, distance) condition snapshot, decodes both variables
+        jointly via argmax of the full log-likelihood matrix.
 
         Parameters
         ----------
-        agg          : SessionAggregator  (must have .angle_axis and .distances)
-        monocular    : int   0 = binocular, 1 = monocular
-        area         : str    visual area (None = all areas)
-        n_repeats    : int
-        cell_idx     : array-like or None   neuron subset (None = all)
-        angle_ranges : list of (lo, hi) tuples in degrees, or None
-            Default: [(-30, -15), (-15, 15), (15, 45)]
+        agg       : SessionAggregator  (must have .angle_axis and .distances)
+        monocular : int   0 = binocular, 1 = monocular
+        area      : str   visual area (None = all areas)
+        n_repeats : int
+        cell_idx  : array-like or None   neuron subset (None = all)
+        verbose   : bool  print progress and summary (default True)
 
         Returns
         -------
         dict with keys:
-            d_pred_cont          shape (n_repeats, n_distances, n_positions)
-            d_pred_hard          shape (n_repeats, n_distances, n_positions)  (distance values)
-            a_pred               shape (n_repeats, n_distances, n_positions)
-            d_true               shape (n_distances, n_positions)
-            a_true               shape (n_distances, n_positions)
-            angle_axis / deg_axis shape (n_positions,)
-            distances            shape (n_distances,)
-            a_error_by_pos       shape (n_positions,)
-            d_error_by_pos       shape (n_positions,)
-            d_acc_by_pos         shape (n_positions,)
-            --- flat arrays for plot_distance_comparison ---
-            angle_by             shape (N,)  position index per observation
-            repeat_by            shape (N,)  repeat index per observation
-            d_pred_hard_by_angle shape (N,)  hard distance prediction index per observation
-            d_true_by_angle      shape (N,)  true distance index per observation
-            d_pred_cont_by_angle shape (N,)  continuous distance prediction per observation
-            range_results        dict keyed by angle-range label
-
-        Indexing: result['d_pred_cont'][rep, d, a] is the prediction for repeat rep,
-        true distance distances[d], true angle angle_axis[a].
+            pred_dist        shape (n_repeats, n_distances, n_positions)  decoded distance values
+            pred_angle       shape (n_repeats, n_distances, n_positions)  decoded angle values (deg)
+            true_dist        shape (n_distances, n_positions)
+            true_angle       shape (n_distances, n_positions)
+            angle_axis       shape (n_positions,)
+            distances        shape (n_distances,)
+            angle_mae_by_pos shape (n_positions,)  mean abs angle error per position (deg)
+            dist_acc_by_pos  shape (n_positions,)  distance classification accuracy per position
         """
         distances   = agg.distances
         angle_axis  = agg.angle_axis
         n_positions = agg.n_positions
         n_distances = len(distances)
 
-        d_pred_cont = np.zeros((n_repeats, n_distances, n_positions))
-        d_pred_hard = np.zeros((n_repeats, n_distances, n_positions), dtype=int)
-        a_pred      = np.zeros((n_repeats, n_distances, n_positions), dtype=int)
+        pred_dist_idx_grid  = np.zeros((n_repeats, n_distances, n_positions), dtype=int)
+        pred_angle_idx_grid = np.zeros((n_repeats, n_distances, n_positions), dtype=int)
 
         for rep in range(n_repeats):
+            if verbose:
+                print(f'Repeat {rep + 1}/{n_repeats}', end='\r')
             X_train, X_test, _ = agg.get_split_decoder_data(monocular=monocular, area=area)
             if cell_idx is not None:
                 X_train = X_train[cell_idx]
@@ -1473,511 +1278,54 @@ class FactoredMLE:
 
             dec = FactoredMLE().fit(X_train)
 
-            for d_idx in range(n_distances):
-                for a in range(n_positions):
-                    r = X_test[:, a, d_idx]
-                    _, _, scores = dec.decode(r)
-
-                    d_log_p = logsumexp(scores, axis=0)   # marginalise over angle dim  -> (n_distances,)
-                    a_log_p = logsumexp(scores, axis=1)   # marginalise over distance dim -> (n_positions,)
-                    d_pred_cont[rep, d_idx, a] = np.dot(softmax(d_log_p), distances)
-                    d_pred_hard[rep, d_idx, a] = np.argmax(d_log_p)
-                    a_pred[rep, d_idx, a]      = np.argmax(a_log_p)
+            for dist_idx in range(n_distances):
+                for angle_idx in range(n_positions):
+                    r = X_test[:, angle_idx, dist_idx]
+                    pred_angle_idx, pred_dist_idx, _ = dec.decode(r)   # joint argmax
+                    pred_dist_idx_grid[rep, dist_idx, angle_idx]  = pred_dist_idx
+                    pred_angle_idx_grid[rep, dist_idx, angle_idx] = pred_angle_idx
 
         # True labels as grids — same for every repeat
-        d_true = np.tile(distances[:, None], (1, n_positions))   # (n_distances, n_positions)
-        a_true = np.tile(angle_axis[None, :], (n_distances, 1))  # (n_distances, n_positions)
+        true_dist  = np.tile(distances[:, None],  (1, n_positions))   # (n_distances, n_positions)
+        true_angle = np.tile(angle_axis[None, :], (n_distances, 1))   # (n_distances, n_positions)
 
-        d_pred_hard_vals = distances[d_pred_hard]   # (n_repeats, n_distances, n_positions)
-        a_pred_vals      = angle_axis[a_pred]       # (n_repeats, n_distances, n_positions)
+        pred_dist  = distances[pred_dist_idx_grid]    # (n_repeats, n_distances, n_positions)
+        pred_angle = angle_axis[pred_angle_idx_grid]  # (n_repeats, n_distances, n_positions)
 
-        # Per-position (time-step) error metrics — averaged over repeats and distances
-        a_error_by_pos = np.mean(np.abs(a_pred_vals      - a_true[np.newaxis]),  axis=(0, 1))  # (n_positions,)
-        d_error_by_pos = np.mean(np.abs(d_pred_cont      - d_true[np.newaxis]),  axis=(0, 1))  # (n_positions,)
-        d_acc_by_pos   = np.mean(      d_pred_hard_vals == d_true[np.newaxis],   axis=(0, 1))  # (n_positions,)
-
-        # --- Flat per-observation arrays for plot_distance_comparison compatibility ---
-        # Flatten (n_repeats, n_distances, n_positions) using meshgrid
-        rep_g, d_g, a_g   = np.meshgrid(np.arange(n_repeats), np.arange(n_distances),
-                                         np.arange(n_positions), indexing='ij')
-        angle_by             = a_g.ravel()
-        repeat_by            = rep_g.ravel()
-        d_true_by_angle      = d_g.ravel()                # true distance index per observation
-        d_pred_hard_by_angle = d_pred_hard.ravel()        # predicted distance index per observation
-        d_pred_cont_by_angle = d_pred_cont.ravel()        # continuous distance prediction
-
-        # --- Range results ---
-        if angle_ranges is None:
-            angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
-
-        range_results = {}
-        for (lo, hi) in angle_ranges:
-            label    = f'({lo}°, {hi}°)'
-            pos_mask = (angle_axis >= lo) & (angle_axis < hi)
-            obs_mask = pos_mask[angle_by]
-            dh = d_pred_hard_by_angle[obs_mask]
-            dt = d_true_by_angle[obs_mask]
-            dc = d_pred_cont_by_angle[obs_mask]
-            range_results[label] = dict(
-                d_pred_hard  = dh,
-                d_pred_cont  = dc,
-                d_true       = dt,
-                dist_acc     = (dh == dt).mean() * 100                        if len(dt) > 0 else np.nan,
-                dist_mae_cont= np.abs(dc - distances[dt]).mean()              if len(dt) > 0 else np.nan,
-            )
+        # Per-position error metrics — averaged over repeats and distances
+        angle_mae_by_pos = np.mean(np.abs(pred_angle - true_angle[np.newaxis]), axis=(0, 1))  # (n_positions,)
+        dist_acc_by_pos  = np.mean(      pred_dist  == true_dist[np.newaxis],   axis=(0, 1))  # (n_positions,)
 
         res = dict(
-            d_pred_cont          = d_pred_cont,        # (n_repeats, n_distances, n_positions)
-            d_pred_hard          = d_pred_hard_vals,   # (n_repeats, n_distances, n_positions)
-            a_pred               = a_pred_vals,        # (n_repeats, n_distances, n_positions)
-            d_true               = d_true,             # (n_distances, n_positions)
-            a_true               = a_true,             # (n_distances, n_positions)
-            angle_axis           = angle_axis,
-            deg_axis             = angle_axis,         # alias for plot_distance_comparison
-            distances            = distances,
-            a_error_by_pos       = a_error_by_pos,
-            d_error_by_pos       = d_error_by_pos,
-            d_acc_by_pos         = d_acc_by_pos,
-            # flat arrays
-            angle_by             = angle_by,
-            repeat_by            = repeat_by,
-            d_pred_hard_by_angle = d_pred_hard_by_angle,
-            d_true_by_angle      = d_true_by_angle,
-            d_pred_cont_by_angle = d_pred_cont_by_angle,
-            range_results        = range_results,
+            pred_dist        = pred_dist,         # (n_repeats, n_distances, n_positions)
+            pred_angle       = pred_angle,        # (n_repeats, n_distances, n_positions)
+            true_dist        = true_dist,         # (n_distances, n_positions)
+            true_angle       = true_angle,        # (n_distances, n_positions)
+            angle_axis       = angle_axis,
+            distances        = distances,
+            angle_mae_by_pos = angle_mae_by_pos,
+            dist_acc_by_pos  = dist_acc_by_pos,
         )
-        print()
-        FactoredMLE._print_results(res)
+        if verbose:
+            print()
+            FactoredMLE._print_results(res)
         return res
 
     @staticmethod
     def _print_results(res):
         """Print a summary of cross_validate_averaged or cross_validate_single_trial results."""
         print("=" * 40)
-        if 'a_error_by_pos' in res:
-            print(f"  Angle MAE:    {res['a_error_by_pos'].mean():.2f}°")
+        if 'angle_mae_by_pos' in res:
+            print(f"  Angle MAE:    {res['angle_mae_by_pos'].mean():.2f}°")
         if 'metrics' in res:
             m = res['metrics']
             print(f"  Angle MAE:    {m['mae']:.2f}°")
             print(f"  Angle RMSE:   {m['rmse']:.2f}°")
             print(f"  Correlation:  {m['correlation']:.3f}")
             print(f"  R²:           {m['r2']:.3f}")
-        if 'd_error_by_pos' in res:
-            print(f"  Dist MAE:     {res['d_error_by_pos'].mean():.2f} cm")
-            print(f"  Dist Acc:     {res['d_acc_by_pos'].mean():.1%}")
-        elif 'd_acc_by_pos' in res:
-            print(f"  Dist Acc:     {res['d_acc_by_pos'].mean():.1%}")
+        if 'dist_acc_by_pos' in res:
+            print(f"  Dist Acc:     {res['dist_acc_by_pos'].mean():.1%}")
         if 'dist_mae_cont' in res:
             print(f"  Dist MAE:     {res['dist_mae_cont']:.2f} cm")
             print(f"  Dist Acc:     {res['dist_acc']:.1f}%")
         print("=" * 40)
-
-    @staticmethod
-    def _cv_folds(neural_data, trial_distances, n_folds=5, random_state=42, neuron_mask=None):
-        """Generator: one yield per test trial across all CV folds.
-
-        Fits per-neuron noise variance from each training fold.
-
-        Yields
-        ------
-        fold_idx      : int
-        decoder       : FactoredMLE  fitted on the training fold (with per-neuron sigma2)
-        trial_data    : (n_neurons, n_positions)
-        true_dist_idx : int
-        """
-        if neuron_mask is not None:
-            neural_data = neural_data[neuron_mask]
-        _, _, n_trials = neural_data.shape
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-        for fold_idx, (train_indices, test_indices) in enumerate(
-                skf.split(np.zeros(n_trials), trial_distances)):
-            templates = FactoredMLE.build_training_templates(neural_data, train_indices, trial_distances)
-            sigma2    = FactoredMLE.build_noise_variance(neural_data, train_indices, trial_distances)
-            decoder   = FactoredMLE().fit(templates, sigma2=sigma2)
-            for trial_idx in test_indices:
-                yield (fold_idx, decoder,
-                       neural_data[:, :, trial_idx], int(trial_distances[trial_idx]))
-
-    @staticmethod
-    def _cv_folds_averaged(agg, monocular, area=None, n_repeats=10, cell_idx=None):
-        """Generator: one yield per (distance condition, repeat).
-
-        Each 'trial' is the condition-averaged response at all angle positions
-        for one distance — same (n_neurons, n_positions) format as _cv_folds.
-
-        Yields
-        ------
-        rep_idx       : int
-        decoder       : FactoredMLE  fitted on the training split
-        trial_data    : (n_neurons, n_positions)  condition average at one distance
-        true_dist_idx : int
-        """
-        n_distances = len(agg.distances)
-        for rep_idx in range(n_repeats):
-            X_train, X_test, _ = agg.get_split_decoder_data(monocular=monocular, area=area)
-            if cell_idx is not None:
-                X_train = X_train[cell_idx]
-                X_test  = X_test[cell_idx]
-            decoder = FactoredMLE().fit(X_train)
-            for d in range(n_distances):
-                yield rep_idx, decoder, X_test[:, :, d], d
-
-    @staticmethod
-    def _cv_per_position_raw(generator, n_positions, deg_step, deg_start=-30):
-        """Per angle-position angle + distance predictions.
-
-        Parameters
-        ----------
-        generator   : iterable yielding (rep_or_fold_idx, decoder, trial_data, true_dist_idx)
-        n_positions : int
-        deg_step    : float  degrees per position step
-        deg_start   : float  degree value at position index 0
-
-        Returns
-        -------
-        dict with flat arrays (one entry per trial × position):
-            a_pred, a_true, d_pred_hard_by_angle, d_pred_cont_by_angle,
-            d_true_by_angle, entropy_by_angle, angle_by, repeat_by,
-            deg_axis, angle_mae
-        """
-        pos_degrees = np.array([a * deg_step + deg_start for a in range(n_positions)])
-
-        a_pred_list, a_true_list = [], []
-        d_hard_list, d_soft_list, d_true_list = [], [], []
-        entropy_list, angle_by_list, rep_by_list = [], [], []
-
-        for rep_idx, decoder, trial_data, true_dist_idx in generator:
-            (a_by_pos, d_by_pos,
-             entropy_by_pos, ll_by_pos) = FactoredMLE._decode_trial_positions(
-                decoder, trial_data, n_positions)
-
-            for pos in range(n_positions):
-                _, d_soft = FactoredMLE.distance_prediction(ll_by_pos[pos])
-                a_pred_list.append(a_by_pos[pos])
-                a_true_list.append(pos)
-                d_hard_list.append(d_by_pos[pos])
-                d_soft_list.append(d_soft)
-                d_true_list.append(true_dist_idx)
-                entropy_list.append(entropy_by_pos[pos])
-                angle_by_list.append(pos)
-                rep_by_list.append(rep_idx)
-
-        a_pred       = np.array(a_pred_list)
-        a_true       = np.array(a_true_list)
-        angle_by_arr = np.array(angle_by_list)
-        d_hard_arr   = np.array(d_hard_list)
-        d_true_arr   = np.array(d_true_list)
-
-        a_error_by_pos = np.array([
-            np.abs(a_pred[angle_by_arr == a] - a_true[angle_by_arr == a]).mean() * deg_step
-            for a in range(n_positions)
-        ])  # (n_positions,) degrees
-
-        d_acc_by_pos = np.array([
-            (d_hard_arr[angle_by_arr == a] == d_true_arr[angle_by_arr == a]).mean()
-            for a in range(n_positions)
-        ])  # (n_positions,) fraction correct
-
-        return dict(
-            a_pred               = a_pred,
-            a_true               = a_true,
-            d_pred_hard_by_angle = d_hard_arr,
-            d_pred_cont_by_angle = np.array(d_soft_list),
-            d_true_by_angle      = d_true_arr,
-            entropy_by_angle     = np.array(entropy_list),
-            angle_by             = angle_by_arr,
-            repeat_by            = np.array(rep_by_list),
-            deg_axis             = pos_degrees,
-            angle_mae            = np.abs(a_pred - a_true).mean() * deg_step,
-            a_error_by_pos       = a_error_by_pos,
-            d_acc_by_pos         = d_acc_by_pos,
-        )
-
-    @staticmethod
-    def _cv_pooled_raw(generator, n_positions, n_distances, deg_step,
-                       angle_ranges=None, deg_start=-30):
-        """Full-pool and per-range distance predictions.
-
-        For each trial/condition, pools evidence across all positions (or within each
-        angle range) to produce one distance prediction.
-
-        Parameters
-        ----------
-        generator   : iterable yielding (rep_or_fold_idx, decoder, trial_data, true_dist_idx)
-        n_positions : int
-        n_distances : int
-        deg_step    : float  degrees per position step
-        angle_ranges: list of (lo, hi) tuples in degrees, or None
-            Default: [(-30, -15), (-15, 15), (15, 45)]
-        deg_start   : float  degree value at position index 0
-
-        Returns
-        -------
-        dict with:
-            d_pred_hard, d_pred_cont, d_true   (n_observations,)
-            entropy                            (n_observations,)
-            range_results : {label -> {d_pred_hard, d_pred_cont, d_true,
-                                       entropy, dist_acc, dist_mae_cont}}
-            distances, dist_acc, dist_mae_cont
-        """
-        if angle_ranges is None:
-            angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
-
-        pos_degrees = np.array([a * deg_step + deg_start for a in range(n_positions)])
-        positions_in_range = {
-            (lo, hi): [a for a in range(n_positions) if lo <= pos_degrees[a] < hi]
-            for lo, hi in angle_ranges
-        }
-        range_to_label = {(lo, hi): f'[{lo}°, {hi}°)' for lo, hi in angle_ranges}
-
-        d_hard_list, d_soft_list, d_true_list, entropy_list = [], [], [], []
-        range_collector = {k: {'d_h': [], 'd_c': [], 'd_t': [], 'entropy': []}
-                           for k in angle_ranges}
-
-        for _, decoder, trial_data, true_dist_idx in generator:
-
-            (_, _, _, ll_by_pos) = FactoredMLE._decode_trial_positions(
-                decoder, trial_data, n_positions)
-
-            # Full pool
-            pooled = sum(ll_by_pos[a] for a in range(n_positions))
-            d_hard, d_soft = FactoredMLE.distance_prediction(pooled)
-            d_hard_list.append(d_hard)
-            d_soft_list.append(d_soft)
-            d_true_list.append(true_dist_idx)
-            entropy_list.append(FactoredMLE.prediction_entropy(pooled))
-
-            # Per-range
-            for (lo, hi) in angle_ranges:
-                pos_in_range = positions_in_range[(lo, hi)]
-                if not pos_in_range:
-                    continue
-                range_ll = sum(ll_by_pos[a] for a in pos_in_range)
-                d_hard_r, d_soft_r = FactoredMLE.distance_prediction(range_ll)
-                range_collector[(lo, hi)]['d_h'].append(d_hard_r)
-                range_collector[(lo, hi)]['d_c'].append(d_soft_r)
-                range_collector[(lo, hi)]['d_t'].append(true_dist_idx)
-                range_collector[(lo, hi)]['entropy'].append(FactoredMLE.prediction_entropy(range_ll))
-
-        d_hard = np.array(d_hard_list)
-        d_soft = np.array(d_soft_list)
-        d_true = np.array(d_true_list)
-        range_results = {
-            range_to_label[k]: dict(
-                d_pred_hard   = np.array(v['d_h']),
-                d_pred_cont   = np.array(v['d_c']),
-                d_true        = np.array(v['d_t']),
-                entropy       = np.array(v['entropy']),
-                dist_acc      = (np.array(v['d_h']) == np.array(v['d_t'])).mean() * 100 if v['d_t'] else np.nan,
-                dist_mae_cont = np.abs(np.array(v['d_c']) - np.array(v['d_t'])).mean() if v['d_t'] else np.nan,
-            )
-            for k, v in range_collector.items()
-        }
-        return dict(
-            d_pred_hard   = d_hard,
-            d_pred_cont   = d_soft,
-            d_true        = d_true,
-            entropy       = np.array(entropy_list),
-            range_results = range_results,
-            distances     = np.arange(n_distances),
-            dist_acc      = (d_hard == d_true).mean() * 100,
-            dist_mae_cont = np.abs(d_soft - d_true).mean(),
-        )
-
-    @staticmethod
-    def _cv_rolling_raw(generator, n_positions, n_distances, deg_step, deg_start=-30):
-        """Cumulative left-to-right distance decoding.
-
-        At step t, pools log-likelihoods from positions 0..t to make a prediction.
-        Shows how decoding accuracy builds as more of the visual field is observed.
-
-        Parameters
-        ----------
-        generator   : iterable yielding (rep_or_fold_idx, decoder, trial_data, true_dist_idx)
-        n_positions : int
-        n_distances : int
-        deg_step    : float  degrees per position step
-        deg_start   : float  degree value at position index 0
-
-        Returns
-        -------
-        dict with:
-            d_pred_hard  (n_observations, n_positions)
-            d_pred_cont  (n_observations, n_positions)
-            d_true       (n_observations,)
-            entropy      (n_observations, n_positions)
-            deg_axis     (n_positions,)
-        """
-        pos_degrees = np.array([a * deg_step + deg_start for a in range(n_positions)])
-
-        rolling_hard, rolling_soft, rolling_entropy, d_true_list = [], [], [], []
-
-        for _, decoder, trial_data, true_dist_idx in generator:
-            (_, _, _, ll_by_pos) = FactoredMLE._decode_trial_positions(
-                decoder, trial_data, n_positions)
-
-            cumulative = np.zeros(n_distances)
-            step_hard, step_soft, step_entropy = [], [], []
-            for t in range(n_positions):
-                cumulative = cumulative + ll_by_pos[t]
-                h, s = FactoredMLE.distance_prediction(cumulative)
-                step_hard.append(h)
-                step_soft.append(s)
-                step_entropy.append(FactoredMLE.prediction_entropy(cumulative))
-            rolling_hard.append(step_hard)
-            rolling_soft.append(step_soft)
-            rolling_entropy.append(step_entropy)
-            d_true_list.append(true_dist_idx)
-
-        return dict(
-            d_pred_hard = np.array(rolling_hard),
-            d_pred_cont = np.array(rolling_soft),
-            d_true      = np.array(d_true_list),
-            entropy     = np.array(rolling_entropy),
-            deg_axis    = pos_degrees,
-        )
-
-    @staticmethod
-    def _cv_setup(agg, monocular, area, session, single_trial, n_folds, n_repeats,
-                   random_state, cell_idx):
-        """Build the generator and common geometry parameters for a CV run.
-
-        Returns gen, n_positions, n_distances, deg_step, deg_start, session_id
-        where session_id is the resolved session string (single_trial only) or None.
-        """
-        deg_step    = float(agg.angle_axis[1] - agg.angle_axis[0])
-        deg_start   = float(agg.angle_axis[0])
-        n_positions = agg.n_positions
-        n_distances = len(agg.distances)
-        if single_trial:
-            session = _resolve_session(agg, session)
-            if session is None and len(agg.trial_info) == 1:
-                session = next(iter(agg.trial_info))
-            X, y_dist = agg.get_decoder_data(monocular=monocular, area=area, session=session)
-            gen = FactoredMLE._cv_folds(X, y_dist, n_folds=n_folds, random_state=random_state,
-                                         neuron_mask=cell_idx)
-        else:
-            session = None
-            gen = FactoredMLE._cv_folds_averaged(agg, monocular=monocular, area=area,
-                                                  n_repeats=n_repeats, cell_idx=cell_idx)
-        return gen, n_positions, n_distances, deg_step, deg_start, session
-
-    @staticmethod
-    def cross_validate_per_position(agg, monocular, *, single_trial=True, area=None,
-                                     session=None, n_folds=5, n_repeats=10,
-                                     random_state=42, cell_idx=None):
-        """Cross-validated per angle-position decoding.
-
-        Returns angle and distance predictions at every position for every trial
-        (single_trial=True) or every condition repeat (single_trial=False).
-        Useful for spatial analysis and angle MAE.
-        """
-        gen, n_positions, _, deg_step, deg_start, session_id = FactoredMLE._cv_setup(
-            agg, monocular, area, session, single_trial, n_folds, n_repeats, random_state, cell_idx)
-        res = FactoredMLE._cv_per_position_raw(gen, n_positions, deg_step, deg_start)
-        if session_id is not None:
-            res['session'] = session_id
-        print()
-        FactoredMLE._print_results(res)
-        return res
-
-    @staticmethod
-    def cross_validate_pooled(agg, monocular, *, single_trial=True, area=None, session=None,
-                               angle_ranges=None, n_folds=5, n_repeats=10,
-                               random_state=42, cell_idx=None):
-        """Cross-validated pooled distance decoding.
-
-        Pools evidence across all positions (and within angular ranges) to produce
-        one distance prediction per trial/condition. Best for overall distance accuracy.
-        """
-        gen, n_positions, n_distances, deg_step, deg_start, session_id = FactoredMLE._cv_setup(
-            agg, monocular, area, session, single_trial, n_folds, n_repeats, random_state, cell_idx)
-        res = FactoredMLE._cv_pooled_raw(gen, n_positions, n_distances, deg_step,
-                                          angle_ranges=angle_ranges, deg_start=deg_start)
-        if session_id is not None:
-            res['session'] = session_id
-        return res
-
-    @staticmethod
-    def cross_validate_rolling(agg, monocular, *, single_trial=True, area=None, session=None,
-                                n_folds=5, n_repeats=10, random_state=42, cell_idx=None):
-        """Cross-validated rolling distance decoding.
-
-        At each position t, pools evidence from positions 0..t and decodes distance.
-        Output shape (n_observations, n_positions) — shows how accuracy builds as more
-        of the visual field is observed. Works for both single trials and condition averages.
-        """
-        gen, n_positions, n_distances, deg_step, deg_start, session_id = FactoredMLE._cv_setup(
-            agg, monocular, area, session, single_trial, n_folds, n_repeats, random_state, cell_idx)
-        res = FactoredMLE._cv_rolling_raw(gen, n_positions, n_distances, deg_step, deg_start)
-        if session_id is not None:
-            res['session'] = session_id
-        return res
-
-    @staticmethod
-    def plot_rolling(res, title=''):
-        """Plot rolling distance decoding results.
-
-        Three panels:
-          Left   : accuracy vs angle position, one line per distance (mean ± SEM across trials)
-          Middle : mean entropy vs angle position
-          Right  : confusion matrix at the last position (full field)
-
-        Parameters
-        ----------
-        res   : dict  output of cross_validate_rolling
-        title : str   optional figure suptitle
-
-        Returns
-        -------
-        matplotlib.figure.Figure
-        """
-        d_hard   = res['d_pred_hard']    # (n_obs, n_positions)
-        d_true   = res['d_true']         # (n_obs,)
-        entropy  = res['entropy']        # (n_obs, n_positions)
-        deg_axis = res['deg_axis']       # (n_positions,)
-
-        n_obs, n_pos = d_hard.shape
-        n_distances  = int(d_true.max()) + 1
-        distances    = np.arange(n_distances)
-        chance       = 100.0 / n_distances
-
-        fig, axes = plt.subplots(1, 3, figsize=(16, 4),
-                                 gridspec_kw={'width_ratios': [2, 1.5, 1]})
-
-        # --- Panel 1: overall accuracy by position ---
-        ax = axes[0]
-        correct = (d_hard == d_true[:, None]).astype(float) * 100   # (n_obs, n_pos)
-        mean = correct.mean(axis=0)
-        sem  = correct.std(axis=0) / np.sqrt(n_obs)
-        ax.plot(deg_axis, mean, color='steelblue', linewidth=1.8)
-        ax.fill_between(deg_axis, mean - sem, mean + sem, color='steelblue', alpha=0.2)
-        ax.axhline(chance, color='gray', linestyle='--', linewidth=1, label='chance')
-        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
-        ax.set(xlabel='Angle position (°)', ylabel='Accuracy (%)',
-               title='Rolling accuracy', ylim=(0, 105))
-        ax.legend(fontsize=8)
-
-        # --- Panel 2: mean entropy by position ---
-        ax = axes[1]
-        ent_mean = entropy.mean(axis=0)
-        ent_sem  = entropy.std(axis=0) / np.sqrt(n_obs)
-        ax.plot(deg_axis, ent_mean, color='black', linewidth=1.8)
-        ax.fill_between(deg_axis, ent_mean - ent_sem, ent_mean + ent_sem,
-                        color='black', alpha=0.2)
-        ax.set(xlabel='Angle position (°)', ylabel='Entropy (nats)',
-               title='Mean prediction entropy')
-
-        # --- Panel 3: confusion at last position ---
-        ax = axes[2]
-        cm = confusion_matrix(d_true, d_hard[:, -1],
-                              labels=list(range(n_distances)), normalize='true')
-        acc_final = (d_hard[:, -1] == d_true).mean() * 100
-        ConfusionMatrixDisplay(cm, display_labels=[f'd={d}' for d in distances]).plot(
-            ax=ax, colorbar=False, cmap='Blues')
-        ax.set_title(f'Final accuracy: {acc_final:.1f}%')
-
-        if title:
-            fig.suptitle(title, fontsize=16, y=1.02)
-        plt.tight_layout()
-        return fig

@@ -41,11 +41,12 @@ arguments
     opts.DAQ_flag (1,1) logical = false
 end
 
-% Find videos in the same directory as this script
+% Find videos in the stim-videos directory
 script_dir = fileparts(mfilename('fullpath'));
+stim_video_dir = fullfile(script_dir, '..', 'stim-videos');
 video_names = {'bar_left_to_right.mp4', 'bar_right_to_left.mp4', ...
                'bar_bottom_to_top.mp4', 'bar_top_to_bottom.mp4'};
-paths = cellfun(@(n) fullfile(script_dir, n), video_names, 'UniformOutput', false);
+paths = cellfun(@(n) fullfile(stim_video_dir, n), video_names, 'UniformOutput', false);
 for i = 1:4
     assert(isfile(paths{i}), "Video not found: %s\nRun generate_4direction_bar() first.", paths{i});
 end

@@ -43,9 +43,10 @@ names = {'bar_left_to_right.mp4', 'bar_right_to_left.mp4', ...
 labels = {'left-to-right', 'right-to-left', 'bottom-to-top', 'top-to-bottom'};
 
 script_dir = fileparts(mfilename('fullpath'));
+stim_video_dir = fullfile(script_dir, '..', 'stim-videos');
 
 for d = 1:4
-    out_path = fullfile(script_dir, names{d});
+    out_path = fullfile(stim_video_dir, names{d});
     vid = VideoWriter(out_path, 'MPEG-4');
     vid.FrameRate = opts.fps;
     vid.Quality = 95;

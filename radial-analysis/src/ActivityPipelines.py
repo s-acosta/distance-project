@@ -4,32 +4,57 @@ import scipy.stats as stats
 import os
 from suite2p.extraction import dcnv
 
-# def split_activity_data(joint_data_dir, split_number, new_session_data_dir):
-#     f_neu = np.load(joint_data_dir + '/Fneu.npy')
-#     raw_f = np.load(joint_data_dir + '/F.npy')
-#     is_cell = np.load(joint_data_dir + '/iscell.npy')
-#     spikes = compute_spike_deconvolution(raw_f, f_neu, tau=1.5, normalize=True)
+def split_sessions(joint_plane0_dir, session1_plane0_dir, session2_plane0_dir):
+    """
+    Split a combined suite2p plane0 directory (two sessions recorded back-to-back)
+    into two separate plane0 directories at the temporal midpoint.
 
-#     split = int(spikes.shape[1] / 2)
+    Cell IDs (iscell, stat, ops) are identical in both outputs.
 
-#     # see if file exists
-#     try:
-#         frames_times = np.load(joint_data_dir + '/frames_time.npy')
-#         frames_times = [frames_times[:split], frames_times[split:]]
-#         np.save(new_session_data_dir + '/frames_time.npy', frames_times[split_number])
-#     except:
-#         print('No frames time file found, computing it from xml file')
+    Parameters
+    ----------
+    joint_plane0_dir : str
+        Path to the combined suite2p/plane0/ directory.
+    session1_plane0_dir : str
+        Output path for the first session's plane0/ directory (will be created).
+    session2_plane0_dir : str
+        Output path for the second session's plane0/ directory (will be created).
+    """
+    import shutil
 
-#     split_spikes = [spikes[:, :split], spikes[:, split:]]
-#     split_f_neu = [f_neu[:, :split], f_neu[:, split:]]
-#     split_raw_f = [raw_f[:, :split], raw_f[:, split:]]
+    os.makedirs(session1_plane0_dir, exist_ok=True)
+    os.makedirs(session2_plane0_dir, exist_ok=True)
 
-#     np.save(new_session_data_dir + '/spks.npy', split_spikes[split_number])
-#     np.save(new_session_data_dir + '/Fneu.npy', split_f_neu[split_number])
-#     np.save(new_session_data_dir + '/F.npy', split_raw_f[split_number])
-#     np.save(new_session_data_dir + '/iscell.npy', is_cell)
+    raw_f = np.load(joint_plane0_dir + '/F.npy')
+    f_neu = np.load(joint_plane0_dir + '/Fneu.npy')
+    spks  = np.load(joint_plane0_dir + '/spks.npy')
 
-#     return spikes, split_spikes[split_number], split_f_neu[split_number], split_raw_f[split_number]
+    split = raw_f.shape[1] // 2
+
+    for arr, fname in [(raw_f, 'F.npy'), (f_neu, 'Fneu.npy'), (spks, 'spks.npy')]:
+        np.save(session1_plane0_dir + '/' + fname, arr[:, :split])
+        np.save(session2_plane0_dir + '/' + fname, arr[:, split:])
+
+    frames_time_path = joint_plane0_dir + '/frames_time.npy'
+    if os.path.isfile(frames_time_path):
+        ft = np.load(frames_time_path)
+        np.save(session1_plane0_dir + '/frames_time.npy', ft[:split])
+        np.save(session2_plane0_dir + '/frames_time.npy', ft[split:])
+
+    dff_path = joint_plane0_dir + '/dFF.npy'
+    if os.path.isfile(dff_path):
+        dff = np.load(dff_path)
+        np.save(session1_plane0_dir + '/dFF.npy', dff[:, :split])
+        np.save(session2_plane0_dir + '/dFF.npy', dff[:, split:])
+
+    for fname in ['iscell.npy', 'stat.npy', 'ops.npy', 'redcell.npy']:
+        src = joint_plane0_dir + '/' + fname
+        if os.path.isfile(src):
+            shutil.copy2(src, session1_plane0_dir + '/' + fname)
+            shutil.copy2(src, session2_plane0_dir + '/' + fname)
+
+    n_cells = raw_f.shape[0]
+    print(f'Split {n_cells} cells: {split} frames → session 1, {raw_f.shape[1] - split} frames → session 2')
 
 class ActivityLoader:
 
@@ -55,7 +80,6 @@ class ActivityLoader:
             self.is_cell = np.load(self.path + '/suite2p/plane0/iscell.npy')
         
         self.import_timing_data()
-
         self.import_activity_data()
 
         if tau is not None:

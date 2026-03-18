@@ -26,14 +26,14 @@ function stim_log = teensyStimulus(video_path, opts)
 
 arguments
     video_path (1,1) string
-    opts.PORT (1,1) string = "COM3"
-    opts.PORT_left (1,1) string = "COM4"  % Left eye port (only used when eye="both")
+    opts.PORT (1,1) string = "COM6"
+    opts.PORT_left (1,1) string = "COM5"  % Left eye port (only used when eye="both")
     opts.baud (1,1) double = 115200
     opts.H (1,1) double = 240
     opts.W (1,1) double = 240
     opts.n_repeats (1,1) double = 2       % Number of trial repetitions
     opts.pre_time (1,1) double = 2.0      % Gray screen before stimulus (seconds)
-    opts.post_time (1,1) double = 2.0     % Gray screen after stimulus (seconds)
+    opts.post_time (1,1) double = 3.0     % Gray screen after stimulus (seconds)
     opts.target_fps (1,1) double = 10     % Target fps for display
     opts.resize (1,1) logical = true
     opts.verbose (1,1) logical = true
@@ -472,9 +472,9 @@ end
 function frame = rotate_for_eye(frame, eye)
     if strcmp(eye, 'right')
         frame = flip(frame, 2);    % invert x axis
-        frame = rot90(frame, 1);  % -90° CW
+        frame = rot90(frame, -1);  % -90° CW
     elseif strcmp(eye, 'left')
-        frame = rot90(frame, -1);   % +90° CCW
+        frame = rot90(frame, 1);   % +90° CCW
     end
 end
 

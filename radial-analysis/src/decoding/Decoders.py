@@ -1312,6 +1312,105 @@ class FactoredMLE:
         return res
 
     @staticmethod
+    def cross_validate_single_trial(agg, monocular, area=None, session=None,
+                                     n_folds=5, random_state=None,
+                                     cell_idx=None, verbose=True):
+        """Cross-validated FactoredMLE on single trials (no pseudotrials).
+
+        Uses k-fold CV (same as MLE.cross_validate_single_trial): each trial
+        appears in exactly one test fold. Fit uses condition-averaged train data
+        built from the train fold; test decodes each trial individually.
+
+        Pass session to restrict to a single recording session (recommended —
+        single-trial decoding across sessions conflates population differences).
+
+        Parameters
+        ----------
+        agg          : SessionAggregator  (must have .angle_axis and .distances)
+        monocular    : int   0 = binocular, 1 = monocular
+        area         : str   visual area (None = all areas)
+        session      : int or None   integer session number (e.g. 9 → '_9_' in name)
+        n_folds      : int   number of CV folds (default 5)
+        random_state : int or None
+        cell_idx     : array-like or None   neuron subset (None = all)
+        verbose      : bool  print progress and summary (default True)
+
+        Returns
+        -------
+        dict with keys:
+            pred_dist        shape (n_trials, n_positions)  decoded distance values
+            pred_angle       shape (n_trials, n_positions)  decoded angle values (deg)
+            true_dist        shape (n_trials,)              true distance label per trial
+            true_angle       shape (n_trials, n_positions)  true angle at each position
+            angle_axis       shape (n_positions,)
+            distances        shape (n_distances,)
+            angle_mae_by_pos shape (n_positions,)
+            dist_acc_by_pos  shape (n_positions,)
+        """
+        from sklearn.model_selection import StratifiedKFold
+
+        session = _resolve_session(agg, session)
+        X, y_distance = agg.get_decoder_data(monocular=monocular, area=area,
+                                              session=session)
+        distances   = agg.distances
+        angle_axis  = agg.angle_axis
+        n_positions = len(angle_axis)
+        n_trials    = X.shape[2]
+
+        if cell_idx is not None:
+            X = X[cell_idx]
+
+        pred_dist_idx  = np.zeros((n_trials, n_positions), dtype=int)
+        pred_angle_idx = np.zeros((n_trials, n_positions), dtype=int)
+
+        kfold = StratifiedKFold(n_splits=n_folds, shuffle=True,
+                                 random_state=random_state)
+        for fold_idx, (train_idx, test_idx) in enumerate(
+                kfold.split(np.zeros(n_trials), y_distance)):
+            if verbose:
+                print(f'Fold {fold_idx + 1}/{n_folds}', end='\r')
+
+            # Condition-averaged train data: average train trials per distance
+            X_cond_train = np.stack(
+                [X[:, :, train_idx[y_distance[train_idx] == d]].mean(axis=2)
+                 for d in distances],
+                axis=2,
+            )  # (n_neurons, n_positions, n_distances)
+
+            dec = FactoredMLE().fit(X_cond_train)
+
+            for t in test_idx:
+                for angle_idx in range(n_positions):
+                    r = X[:, angle_idx, t]
+                    pred_a, pred_d, _ = dec.decode(r)
+                    pred_angle_idx[t, angle_idx] = pred_a
+                    pred_dist_idx[t, angle_idx]  = pred_d
+
+        true_dist  = y_distance
+        true_angle = np.tile(angle_axis[None, :], (n_trials, 1))
+
+        pred_dist  = distances[pred_dist_idx]
+        pred_angle = angle_axis[pred_angle_idx]
+
+        angle_mae_by_pos = np.mean(np.abs(pred_angle - true_angle), axis=0)
+        dist_acc_by_pos  = np.mean(pred_dist == true_dist[:, np.newaxis], axis=0)
+
+        res = dict(
+            pred_dist        = pred_dist,
+            pred_angle       = pred_angle,
+            true_dist        = true_dist,
+            true_angle       = true_angle,
+            angle_axis       = angle_axis,
+            distances        = distances,
+            angle_mae_by_pos = angle_mae_by_pos,
+            dist_acc_by_pos  = dist_acc_by_pos,
+        )
+        if verbose:
+            print()
+            FactoredMLE._print_results(res)
+        return res
+
+    @staticmethod
     def _print_results(res):
         """Print a summary of cross_validate_averaged or cross_validate_single_trial results."""
         print("=" * 40)

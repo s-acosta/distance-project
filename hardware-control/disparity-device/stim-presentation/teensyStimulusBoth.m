@@ -1,169 +1,146 @@
-function stim_log = teensyStimulusBoth(start_point, end_point, stim_size, opts)
+function stim_log = teensyStimulusBoth(start_point, end_point, opts)
 % Present binocular stimulus on two Teensys simultaneously across disparity conditions.
 %
-% The right eye shows the stimulus at each disparity offset; the left eye always
-% shows the opposite-direction motion (binocular coherence). Both screens receive
-% frames every trial. Send order alternates per trial to counterbalance the
-% ~30-60 ms serial desync inherent to sequential USB-CDC transfers.
+% Positions are specified in a common reference frame where:
+%   Left eye pixel  = -common_position
+%   Right eye pixel =  common_position + opts.offset + D
+%
+% This ensures both eyes see the ball moving in the same visual direction.
+% Frames are precomputed per disparity condition using make_ball_frame; no video files needed.
+% Both screens receive frames every frame interval. Send order alternates per trial to
+% counterbalance the ~30-60 ms serial desync inherent to sequential USB-CDC transfers.
 %
 % Usage:
-%   stim_log = teensyStimulusBoth(0, 240, 20)
-%   stim_log = teensyStimulusBoth(0, 240, 20, 'disparities', [-20 0 20], 'n_repeats', 4)
-%   stim_log = teensyStimulusBoth(0, 240, 20, 'preview', true)
+%   stim_log = teensyStimulusBoth(-50, 90, 20)
+%   stim_log = teensyStimulusBoth(-50, 90, 20, 'disparities', [-20 0 20], 'offset', 90)
+%   stim_log = teensyStimulusBoth(-50, 90, 20, 'preview', true)
 %
 % Required args:
-%   start_point  - Starting x position of stimulus circle (pixels)
-%   end_point    - Ending x position of stimulus circle (pixels)
+%   start_point  - Starting position in common reference frame (can be negative)
+%   end_point    - Ending position in common reference frame
 %   stim_size    - Diameter of stimulus circle (pixels)
 %
 % Returns:
-%   stim_log.trial_disparity(i)  - Disparity value for trial i (pixels)
+%   stim_log.trial_disparity(i)  - Disparity value for trial i (common frame px)
 %   stim_log.lead_eye(i)         - Which eye was sent first (1=right, 2=left)
 %   stim_log.trial_start(i)      - Start time of trial i (seconds)
 %   stim_log.pre_start(i)        - Start of PRE phase
-%   stim_log.stim_start(i)       - Start of stimulus video
-%   stim_log.stim_end(i)         - End of stimulus video
+%   stim_log.stim_start(i)       - Start of stimulus
+%   stim_log.stim_end(i)         - End of stimulus
 %   stim_log.post_end(i)         - End of POST phase
 %   stim_log.frame_times{i}      - Frame timestamps for trial i
 
 arguments
     start_point  (1,1) double
     end_point    (1,1) double
-    stim_size    (1,1) double
-    opts.disparities (1,:) double = 0          % Right-eye disparity offsets (px)
-    opts.duration    (1,1) double = 6.0        % Stimulus video duration (s)
-    opts.frame_rate  (1,1) double = 10         % Video generation frame rate
-    opts.rcycles     (1,1) double = 1          % Radial cycles in checkerboard
-    opts.tcycles     (1,1) double = 2          % Angular cycles in checkerboard
-    opts.window_size (1,1) double = 240        % Psychtoolbox window size for generation
-    opts.PORT        (1,1) string = "COM6"     % Right eye serial port
-    opts.PORT_left   (1,1) string = "COM5"     % Left eye serial port
-    opts.baud        (1,1) double = 115200
-    opts.H           (1,1) double = 240
-    opts.W           (1,1) double = 240
-    opts.n_repeats   (1,1) double = 2          % Repeats per disparity condition
-    opts.pre_time    (1,1) double = 2.0        % Gray screen before stim (s)
-    opts.post_time   (1,1) double = 3.0        % Gray screen after stim (s)
-    opts.target_fps  (1,1) double = 10         % Serial playback FPS
-    opts.brightness  (1,1) double = 1.0        % Luminance scale (0-1)
-    opts.shuffle     (1,1) logical = true      % Randomize trial order across conditions
-    opts.DAQ_flag    (1,1) logical = false
-    opts.scope       (1,1) string = '2p'       % 'widefield' or '2p'
-    opts.preview     (1,1) logical = false     % Screen preview only, no Teensy
-    opts.verbose     (1,1) logical = true
+    opts.stim_size    (1,1) double = 30
+    opts.disparities   (1,:) double = [-50, 0, 50]          % Right-eye disparity offsets in common frame (px)
+    opts.offset        (1,1) double = 90          % Constant baseline shift for right eye (common frame px)
+    opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
+    opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
+    opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard
+    opts.PORT          (1,1) string = "COM6"     % Right eye serial port
+    opts.PORT_left     (1,1) string = "COM5"     % Left eye serial port
+    opts.baud          (1,1) double = 115200
+    opts.H             (1,1) double = 240
+    opts.W             (1,1) double = 240
+    opts.n_repeats     (1,1) double = 1          % Repeats per disparity condition
+    opts.pre_time      (1,1) double = 2.0        % Gray screen before stim (s)
+    opts.post_time     (1,1) double = 3.0        % Gray screen after stim (s)
+    opts.target_fps    (1,1) double = 10         % Serial playback FPS
+    opts.brightness    (1,1) double = 1.0        % Luminance scale (0-1)
+    opts.bw            (1,1) logical = false     % Black background, solid white ball
+    opts.shuffle       (1,1) logical = true      % Randomize trial order across conditions
+    opts.DAQ_flag      (1,1) logical = false
+    opts.scope         (1,1) string = '2p'       % 'widefield' or '2p'
+    opts.preview       (1,1) logical = false     % Screen preview only, no Teensy
+    opts.verbose       (1,1) logical = true
 end
 
-n_disp       = length(opts.disparities);
-frame_interval = 1 / opts.target_fps;
-total_trials   = opts.n_repeats * n_disp;
+n_disp          = length(opts.disparities);
+frame_interval  = 1 / opts.target_fps;
+num_stim_frames = round(opts.stim_duration * opts.target_fps);
+stim_duration   = num_stim_frames / opts.target_fps;  % actual duration after rounding
+trial_dur       = opts.pre_time + stim_duration + opts.post_time;
+total_trials    = opts.n_repeats * n_disp;
+total_dur       = trial_dur * total_trials;
 
-% === GENERATE VIDEOS ===
-if opts.verbose
-    fprintf('=== Generating stimulus videos ===\n');
-    fprintf('  Left eye:  x=%d -> %d (opposite direction)\n', round(end_point), round(start_point));
-    for di = 1:n_disp
-        D = opts.disparities(di);
-        fprintf('  Right eye: x=%d -> %d (disparity=%+d px)\n', ...
-            round(start_point+D), round(end_point+D), round(D));
-    end
-    fprintf('\n');
-end
+% Common frame positions for each stimulus frame
+common_frame_positions = linspace(start_point, end_point, num_stim_frames);
 
-% Left-eye video (one, opposite direction, fixed)
-left_name = sprintf('stim_left_x%d_to_%d_size%d.mp4', ...
-    round(end_point), round(start_point), round(stim_size));
-if ~isfile(left_name)
-    generate_leftright_stim(end_point, start_point, stim_size, ...
-        opts.duration, opts.frame_rate, ...
-        'output_name', left_name, ...
-        'window_size', opts.window_size, ...
-        'rcycles', opts.rcycles, ...
-        'tcycles', opts.tcycles);
-else
-    if opts.verbose, fprintf('  Left video already exists, skipping: %s\n\n', left_name); end
-end
-
-% Right-eye videos (one per disparity)
-right_names = cell(1, n_disp);
-for di = 1:n_disp
-    D = opts.disparities(di);
-    right_names{di} = sprintf('stim_right_x%d_to_%d_size%d_disp%+d.mp4', ...
-        round(start_point+D), round(end_point+D), round(stim_size), round(D));
-    if ~isfile(right_names{di})
-        generate_leftright_stim(start_point+D, end_point+D, stim_size, ...
-            opts.duration, opts.frame_rate, ...
-            'output_name', right_names{di}, ...
-            'window_size', opts.window_size, ...
-            'rcycles', opts.rcycles, ...
-            'tcycles', opts.tcycles);
-    else
-        if opts.verbose
-            fprintf('  Right video (disp=%+d) already exists, skipping: %s\n\n', round(D), right_names{di});
-        end
-    end
-end
+% Left eye pixel endpoints (same for every trial)
+left_start_px = -common_frame_positions(1);
+left_end_px   = -common_frame_positions(end);
 
 % === PRE-COMPUTE FRAMES ===
 if opts.verbose
     fprintf('=== Pre-computing frames ===\n');
+    fprintf('  Common frame: %.1f to %.1f | %d frames at %d fps (%.1fs)\n', ...
+        start_point, end_point, num_stim_frames, opts.target_fps, stim_duration);
 end
 
-% Left eye frames (one set)
-vL = VideoReader(left_name);
-raw_L = {};
-vL.CurrentTime = 0;
-while hasFrame(vL)
-    rgb = readFrame(vL);
-    if size(rgb,1) ~= opts.H || size(rgb,2) ~= opts.W
-        rgb = imresize(rgb, [opts.H opts.W], 'nearest');
-    end
-    raw_L{end+1} = rgb; %#ok<AGROW>
-end
-frames_L   = process_frames(raw_L, 'left', opts.brightness);
-payloads_L = cellfun(@rgb565_payload, frames_L, 'UniformOutput', false);
-n_frames_L = length(frames_L);
-if opts.verbose
-    fprintf('  Left eye: %d frames\n', n_frames_L);
-end
-
-% Right eye frames per disparity
-all_raw_R      = cell(1, n_disp);
-all_frames_R   = cell(1, n_disp);
-all_payloads_R = cell(1, n_disp);
-n_frames_R     = zeros(1, n_disp);
-for di = 1:n_disp
-    vR = VideoReader(right_names{di});
-    raw_R = {};
-    vR.CurrentTime = 0;
-    while hasFrame(vR)
-        rgb = readFrame(vR);
-        if size(rgb,1) ~= opts.H || size(rgb,2) ~= opts.W
-            rgb = imresize(rgb, [opts.H opts.W], 'nearest');
-        end
-        raw_R{end+1} = rgb; %#ok<AGROW>
-    end
-    all_frames_R{di}   = process_frames(raw_R, 'right', opts.brightness);
-    all_payloads_R{di} = cellfun(@rgb565_payload, all_frames_R{di}, 'UniformOutput', false);
-    n_frames_R(di)     = length(all_frames_R{di});
-    if opts.verbose
-        fprintf('  Right eye (disp=%+d): %d frames\n', round(opts.disparities(di)), n_frames_R(di));
-    end
-end
-
-% Gray payloads
-gray_img_R   = rotate_for_eye(uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness)), 'right');
-gray_img_L   = rotate_for_eye(uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness)), 'left');
+% Gray images (rotated per eye for consistency with ball frames)
+gray_img_R     = rotate_for_eye(uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness)), 'right');
+gray_img_L     = rotate_for_eye(uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness)), 'left');
 gray_payload_R = rgb565_payload(gray_img_R);
 gray_payload_L = rgb565_payload(gray_img_L);
 
-% Use first right-eye disparity's duration for timing (all should match)
-vid_duration = VideoReader(right_names{1}).Duration;
-trial_dur    = opts.pre_time + vid_duration + opts.post_time;
-total_dur    = trial_dur * total_trials;
+% Left eye: left_pixel = -common_position
+% Ball is visible when left_pixel in [0, W]; otherwise gray
+left_eye_frames   = cell(1, num_stim_frames);
+left_eye_payloads = cell(1, num_stim_frames);
+for frame_idx = 1:num_stim_frames
+    left_pixel_position = -common_frame_positions(frame_idx);
+    if left_pixel_position >= 0 && left_pixel_position <= opts.W
+        ball_frame = make_ball_frame(left_pixel_position, opts.stim_size, ...
+                                     opts.W, opts.H, opts.rcycles, opts.tcycles, ...
+                                     opts.bw, opts.brightness);
+        left_eye_frames{frame_idx}   = rotate_for_eye(ball_frame, 'left');
+        left_eye_payloads{frame_idx} = rgb565_payload(left_eye_frames{frame_idx});
+    else
+        left_eye_frames{frame_idx}   = gray_img_L;
+        left_eye_payloads{frame_idx} = gray_payload_L;
+    end
+end
+
+if opts.verbose
+    n_visible_L = sum(-common_frame_positions >= 0 & -common_frame_positions <= opts.W);
+    fprintf('  Left eye:  %d/%d frames visible\n', n_visible_L, num_stim_frames);
+end
+
+% Right eye: right_pixel = common_position + offset + D  (one array per disparity condition)
+right_eye_frames_by_disparity   = cell(1, n_disp);
+right_eye_payloads_by_disparity = cell(1, n_disp);
+for disparity_idx = 1:n_disp
+    current_disparity = opts.disparities(disparity_idx);
+    right_eye_frames_by_disparity{disparity_idx}   = cell(1, num_stim_frames);
+    right_eye_payloads_by_disparity{disparity_idx} = cell(1, num_stim_frames);
+
+    for frame_idx = 1:num_stim_frames
+        right_pixel_position = common_frame_positions(frame_idx) + opts.offset + current_disparity;
+        if right_pixel_position >= 0 && right_pixel_position <= opts.W
+            ball_frame = make_ball_frame(right_pixel_position, opts.stim_size, ...
+                                         opts.W, opts.H, opts.rcycles, opts.tcycles, ...
+                                         opts.bw, opts.brightness);
+            right_eye_frames_by_disparity{disparity_idx}{frame_idx}   = rotate_for_eye(ball_frame, 'right');
+            right_eye_payloads_by_disparity{disparity_idx}{frame_idx} = ...
+                rgb565_payload(right_eye_frames_by_disparity{disparity_idx}{frame_idx});
+        else
+            right_eye_frames_by_disparity{disparity_idx}{frame_idx}   = gray_img_R;
+            right_eye_payloads_by_disparity{disparity_idx}{frame_idx} = gray_payload_R;
+        end
+    end
+
+    if opts.verbose
+        right_positions   = common_frame_positions + opts.offset + current_disparity;
+        n_visible_R       = sum(right_positions >= 0 & right_positions <= opts.W);
+        fprintf('  Right eye (offset=%+d, disp=%+d): %d/%d frames visible\n', ...
+            round(opts.offset), round(current_disparity), n_visible_R, num_stim_frames);
+    end
+end
 
 % === TRIAL ORDER ===
-% Build condition list: each disparity repeated n_repeats times
-cond_list = repelem(1:n_disp, opts.n_repeats);   % [1 1 ... 2 2 ... N N ...]
+cond_list = repelem(1:n_disp, opts.n_repeats);
 if opts.shuffle
     rng(0);
     cond_list = cond_list(randperm(total_trials));
@@ -174,10 +151,11 @@ lead_seq = mod((0:total_trials-1), 2) + 1;
 
 if opts.verbose
     fprintf('\n=== Teensy Both-Eye Stimulus ===\n');
-    fprintf('Disparities: %s px\n', mat2str(opts.disparities));
+    fprintf('Common frame: %.1f to %.1f\n', start_point, end_point);
+    fprintf('Offset: %+d px | Disparities: %s px\n', round(opts.offset), mat2str(opts.disparities));
     fprintf('n_repeats per condition: %d | Total trials: %d\n', opts.n_repeats, total_trials);
     fprintf('Trial structure: PRE %.1fs | STIM %.2fs | POST %.1fs (%.2fs total)\n', ...
-        opts.pre_time, vid_duration, opts.post_time, trial_dur);
+        opts.pre_time, stim_duration, opts.post_time, trial_dur);
     fprintf('Total experiment: %.1f s (%.1f min)\n', total_dur, total_dur/60);
     fprintf('Shuffle: %s\n', string(opts.shuffle));
     fprintf('Condition order (disparity px): %s\n', mat2str(opts.disparities(cond_list)));
@@ -193,8 +171,8 @@ end
 % === SETUP ===
 if opts.preview
     figure('Name', 'Both-Eye Preview', 'NumberTitle', 'off');
-    ax_L = subplot(1,2,1); imshow(gray_img_L, 'Parent', ax_L); title(ax_L, 'Left eye');
-    ax_R = subplot(1,2,2); imshow(gray_img_R, 'Parent', ax_R); title(ax_R, 'Right eye');
+    ax_L = subplot(1,2,1); imshow(rot90(gray_img_L,  1), 'Parent', ax_L); title(ax_L, 'Left eye');
+    ax_R = subplot(1,2,2); imshow(rot90(gray_img_R, -1), 'Parent', ax_R); title(ax_R, 'Right eye');
     ih_R = findobj(ax_R, 'Type', 'image');
     ih_L = findobj(ax_L, 'Type', 'image');
     drawnow;
@@ -225,7 +203,8 @@ stim_log = struct();
 stim_log.parameters      = opts;
 stim_log.start_point     = start_point;
 stim_log.end_point       = end_point;
-stim_log.stim_size       = stim_size;
+stim_log.stim_size       = opts.stim_size;
+stim_log.offset          = opts.offset;
 stim_log.disparities     = opts.disparities;
 stim_log.trial_disparity = opts.disparities(cond_list);
 stim_log.lead_eye        = lead_seq;
@@ -234,7 +213,11 @@ stim_log.pre_start       = zeros(1, total_trials);
 stim_log.stim_start      = zeros(1, total_trials);
 stim_log.stim_end        = zeros(1, total_trials);
 stim_log.post_end        = zeros(1, total_trials);
-stim_log.frame_times     = cell(1, total_trials);
+stim_log.frame_times         = cell(1, total_trials);
+stim_log.left_eye_start_px   = nan(1, total_trials);
+stim_log.left_eye_end_px     = nan(1, total_trials);
+stim_log.right_eye_start_px  = nan(1, total_trials);
+stim_log.right_eye_end_px    = nan(1, total_trials);
 
 if opts.verbose && ~opts.preview
     fprintf('Press Enter when ready...\n');
@@ -265,22 +248,23 @@ for trial = 1:total_trials
     D_val  = opts.disparities(d_idx);
     lead   = lead_seq(trial);
 
-    stim_payloads_R = all_payloads_R{d_idx};
-    stim_frames_R   = all_frames_R{d_idx};
-    nfR = n_frames_R(d_idx);
-    nfL = n_frames_L;
+    current_right_payloads = right_eye_payloads_by_disparity{d_idx};
+    current_right_frames   = right_eye_frames_by_disparity{d_idx};
 
     if opts.verbose
         lead_str = 'right'; if lead == 2, lead_str = 'left'; end
-        fprintf('--- Trial %d/%d | disparity=%+d px | lead=%s ---\n', ...
-            trial, total_trials, round(D_val), lead_str);
+        fprintf('--- Trial %d/%d | disparity=%+d px | offset=%+d px | lead=%s ---\n', ...
+            trial, total_trials, round(D_val), round(opts.offset), lead_str);
     end
 
     trial_frame_times = [];
     trial_offset = (trial - 1) * trial_dur;
 
-    % --- Helper: send both eyes for one frame ---
-    % (inline below per phase for clarity)
+    % Pixel endpoints for this trial (NaN if out of display range)
+    stim_log.left_eye_start_px(trial)  = left_start_px;
+    stim_log.left_eye_end_px(trial)    = left_end_px;
+    stim_log.right_eye_start_px(trial) = common_frame_positions(1)   + opts.offset + D_val;
+    stim_log.right_eye_end_px(trial)   = common_frame_positions(end) + opts.offset + D_val;
 
     stim_log.trial_start(trial) = toc(experiment_start);
 
@@ -291,8 +275,8 @@ for trial = 1:total_trials
     end
 
     if opts.preview
-        set(ih_R, 'CData', gray_img_R); title(ax_R, sprintf('T%d PRE', trial));
-        set(ih_L, 'CData', gray_img_L); title(ax_L, sprintf('T%d PRE', trial));
+        set(ih_R, 'CData', rot90(gray_img_R, -1)); title(ax_R, sprintf('T%d PRE', trial));
+        set(ih_L, 'CData', rot90(gray_img_L,  1)); title(ax_L, sprintf('T%d PRE', trial));
         drawnow;
     end
 
@@ -308,7 +292,7 @@ for trial = 1:total_trials
         while toc(experiment_start) < next_frame, pause(0.0001); end
     end
 
-    % === STIM PHASE (video) ===
+    % === STIM PHASE ===
     stim_log.stim_start(trial) = toc(experiment_start);
     if opts.verbose
         fprintf('  STIM start: %.4f s\n', stim_log.stim_start(trial));
@@ -316,28 +300,23 @@ for trial = 1:total_trials
 
     if opts.preview
         title(ax_R, sprintf('T%d STIM (disp=%+d)', trial, round(D_val)));
-        title(ax_L, sprintf('T%d STIM (opposite)', trial));
+        title(ax_L, sprintf('T%d STIM', trial));
     end
 
-    stim_frame_count = 0;
     stim_offset = trial_offset + opts.pre_time;
-    phase_end   = stim_offset + vid_duration;
-
-    while toc(experiment_start) < phase_end
-        fi_R = mod(stim_frame_count, nfR) + 1;
-        fi_L = mod(stim_frame_count, nfL) + 1;
-
+    for stim_frame_idx = 1:num_stim_frames
         if opts.preview
-            set(ih_R, 'CData', stim_frames_R{fi_R});
-            set(ih_L, 'CData', frames_L{fi_L});
+            set(ih_R, 'CData', rot90(current_right_frames{stim_frame_idx}, -1));
+            set(ih_L, 'CData', rot90(left_eye_frames{stim_frame_idx},       1));
             drawnow;
         else
-            send_both(s_right, stim_payloads_R{fi_R}, s_left, payloads_L{fi_L}, opts.W, opts.H, lead);
+            send_both(s_right, current_right_payloads{stim_frame_idx}, ...
+                      s_left,  left_eye_payloads{stim_frame_idx}, ...
+                      opts.W, opts.H, lead);
         end
 
-        stim_frame_count = stim_frame_count + 1;
         trial_frame_times(end+1) = toc(experiment_start); %#ok<AGROW>
-        target_time = stim_offset + stim_frame_count * frame_interval;
+        target_time = stim_offset + stim_frame_idx * frame_interval;
         while toc(experiment_start) < target_time, pause(0.0001); end
     end
 
@@ -348,13 +327,13 @@ for trial = 1:total_trials
     end
 
     % === POST PHASE (gray) ===
-    post_offset    = trial_offset + opts.pre_time + vid_duration;
-    phase_end      = trial_offset + trial_dur;
+    post_offset      = trial_offset + opts.pre_time + stim_duration;
+    phase_end        = trial_offset + trial_dur;
     post_frame_count = 0;
 
     if opts.preview
-        set(ih_R, 'CData', gray_img_R); title(ax_R, sprintf('T%d POST', trial));
-        set(ih_L, 'CData', gray_img_L); title(ax_L, sprintf('T%d POST', trial));
+        set(ih_R, 'CData', rot90(gray_img_R, -1)); title(ax_R, sprintf('T%d POST', trial));
+        set(ih_L, 'CData', rot90(gray_img_L,  1)); title(ax_L, sprintf('T%d POST', trial));
         drawnow;
     end
 
@@ -386,8 +365,8 @@ stim_log.finish_time = toc(experiment_start);
 
 % === CLEANUP ===
 if opts.preview
-    set(ih_R, 'CData', gray_img_R); title(ax_R, 'Done');
-    set(ih_L, 'CData', gray_img_L); title(ax_L, 'Done');
+    set(ih_R, 'CData', rot90(gray_img_R, -1)); title(ax_R, 'Done');
+    set(ih_L, 'CData', rot90(gray_img_L,  1)); title(ax_L, 'Done');
     drawnow;
 else
     if opts.DAQ_flag
@@ -424,15 +403,48 @@ function send_both(s_right, payload_R, s_left, payload_L, W, H, lead)
     end
 end
 
-%% --- Frame processing helpers (mirrored from teensyStimulus.m) ---
-function out = process_frames(raw, eye_str, brightness)
-    out = cell(1, length(raw));
-    for i = 1:length(raw)
-        f = uint8(round(double(raw{i}) * brightness));
-        out{i} = rotate_for_eye(f, eye_str);
+%% --- Ball frame generation ---
+function frame = make_ball_frame(x_pos, stim_size, W, H, rcycles, tcycles, bw, brightness)
+% Build ball at position (x_pos, H/2).
+% bw=true: solid white ball on black background.
+% bw=false: radial checkerboard on gray background.
+% brightness: global luminance scale (0=black, 1=full brightness).
+
+    xylim = pi * rcycles;
+    [xg, yg] = meshgrid(linspace(-xylim, xylim, stim_size));
+    circle = (xg.^2 + yg.^2) <= xylim^2;
+    if bw
+        ball = double(circle);
+    else
+        at = atan2(yg, xg);
+        checksN = (1 + sign(sin(at * tcycles) + eps) .* sign(sin(sqrt(xg.^2 + yg.^2)))) / 2;
+        ball = circle .* checksN + 0.5 * ~circle;
     end
+    ball_rgb = uint8(round(ball * 255 * brightness));
+    ball_rgb = cat(3, ball_rgb, ball_rgb, ball_rgb);
+
+    if bw
+        frame = uint8(zeros(H, W, 3));
+    else
+        frame = uint8(ones(H, W, 3) * round(127 * brightness));
+    end
+    y_center = round(H / 2);
+    half     = floor(stim_size / 2);
+
+    y1 = max(1, y_center - half);
+    y2 = min(H, y_center - half + stim_size - 1);
+    x1 = max(1, round(x_pos) - half);
+    x2 = min(W, round(x_pos) - half + stim_size - 1);
+
+    by1 = y1 - (y_center - half) + 1;
+    by2 = by1 + (y2 - y1);
+    bx1 = x1 - (round(x_pos) - half) + 1;
+    bx2 = bx1 + (x2 - x1);
+
+    frame(y1:y2, x1:x2, :) = ball_rgb(by1:by2, bx1:bx2, :);
 end
 
+%% --- Frame rotation for each eye ---
 function frame = rotate_for_eye(frame, eye)
     if strcmp(eye, 'right')
         frame = flip(frame, 2);
@@ -442,6 +454,7 @@ function frame = rotate_for_eye(frame, eye)
     end
 end
 
+%% --- RGB565 serialization ---
 function payload = rgb565_payload(img)
     if ~isa(img, 'uint8'), img = im2uint8(img); end
     R5 = bitshift(uint16(img(:,:,1)), -3);

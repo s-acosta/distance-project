@@ -364,14 +364,14 @@ class SessionAggregator:
             print(f"Failed to load cache: {e}")
             return False
 
-    def _get_cell_indices(self, area: str = None) -> List[int]:
-        """Get DataFrame indices for cells matching area and reliability filters."""
+    def _get_cell_indices(self, area: str = None, session: str = None) -> List[int]:
+        """Get DataFrame indices for cells matching area, session, and reliability filters."""
         df = self._df
 
         if self.reliable_only:
             df = df[
-                (df['monocular'].apply(lambda x: x['reliable']) == True) &
-                (df['binocular'].apply(lambda x: x['reliable']) == True) &
+                ((df['monocular'].apply(lambda x: x['reliable']) == True) |
+                (df['binocular'].apply(lambda x: x['reliable']) == True)) &
                 ((df['monocular'].apply(lambda x: x['reliable_corr']) >= self.reliability_threshold) |
                  (df['binocular'].apply(lambda x: x['reliable_corr']) >= self.reliability_threshold))
             ]
@@ -380,6 +380,10 @@ class SessionAggregator:
             if 'area' not in df.columns:
                 raise ValueError("Area filtering requires 'area' column in DataFrame")
             df = df[df['area'] == area]
+
+        if session is not None:
+            session = self.resolve_session(session)
+            df = df[df['session_name'] == session]
 
         return list(df.index)
 

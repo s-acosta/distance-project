@@ -32,12 +32,12 @@ arguments
     opts.baud        (1,1) double  = 115200
     opts.H           (1,1) double  = 240
     opts.W           (1,1) double  = 240
-    opts.n_repeats   (1,1) double  = 2        % Trials per eye (total = 2 * n_repeats)
+    opts.n_repeats   (1,1) double  = 20        % Trials per eye (total = 2 * n_repeats)
     opts.pre_time    (1,1) double  = 2.0
     opts.post_time   (1,1) double  = 3.0
     opts.target_fps  (1,1) double  = 10
-    opts.brightness  (1,1) double  = 1.0
-    opts.DAQ_flag    (1,1) logical = false
+    opts.brightness  (1,1) double  = 0.6
+    opts.DAQ_flag    (1,1) logical = true
     opts.scope       (1,1) string  = '2p'
     opts.preview     (1,1) logical = false
     opts.verbose     (1,1) logical = true

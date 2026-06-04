@@ -76,8 +76,8 @@ class WidefieldAligner:
             self.aligner_params = self.import_alignment_parameters()
             print(f"Alignment parameters loaded from: {self.multi_session_dir + '/' + self.animal_id + '_' + self.experiment_name + '_alignment_parameters.pkl'}")
         except:
-            print("No alignment parameters found. Drawing areas and aligning sessions.")
-            self.areas_verts = self.draw_areas()
+            print("No alignment parameters found. Loading areas from retinotopy_areas.pkl and aligning sessions.")
+            self.areas_verts = self.load_areas_from_pkl()
             self.wf_transformations = self.align_all_sessions_to_widefield()
             self.export_alignment_parameters()
             self.aligner_params = self.import_alignment_parameters()
@@ -136,29 +136,42 @@ class WidefieldAligner:
 
         widefield_maps = {}
 
-        # Load the snap.mat file from the animal directory
         snap_mat_path = os.path.join(self.multi_session_dir, 'snap.mat')
-        snap_data = loadmat(snap_mat_path)
-        widefield_img = snap_data['snap']
-        # resize widefield_img to the size of 400x400
+        retino_path = os.path.join(self.multi_session_dir, 'retinotopy.npz')
+        retino_data = np.load(retino_path)
+
+        if os.path.exists(snap_mat_path):
+            snap_data = loadmat(snap_mat_path)
+            widefield_img = snap_data['snap']
+        else:
+            widefield_img = retino_data['f0']
         widefield_img = cv2.resize(widefield_img, (400, 400))
         widefield_maps['img'] = widefield_img
 
-        maps_mat_path = os.path.join(self.multi_session_dir, 'maps.mat')
-        maps_data = loadmat(maps_mat_path, struct_as_record=False, squeeze_me=True)
-        VFS_raw = maps_data['maps'].VFS_raw
-        VFS_filtered = gaussian_filter(VFS_raw, sigma=1.5)
-        widefield_maps['VFS'] = VFS_filtered
-
-        alt_raw = maps_data['maps'].VerticalRetinotopy
-        alt_filtered = gaussian_filter(alt_raw, sigma=1.5)
-        widefield_maps['alt'] = alt_filtered
-
-        azi_raw = maps_data['maps'].HorizontalRetinotopy
-        azi_filtered = gaussian_filter(azi_raw, sigma=1.5)
-        widefield_maps['azi'] = azi_filtered
+        vfs = cv2.resize(retino_data['vfs'], (400, 400))
+        alt = cv2.resize(retino_data['altitude_map'], (400, 400))
+        azi = cv2.resize(retino_data['azimuth_map'], (400, 400))
+        widefield_maps['VFS'] = gaussian_filter(vfs, sigma=1.5)
+        widefield_maps['alt'] = gaussian_filter(alt, sigma=1.5)
+        widefield_maps['azi'] = gaussian_filter(azi, sigma=1.5)
 
         return widefield_maps
+
+    def load_areas_from_pkl(self):
+
+        areas_pkl_path = os.path.join(self.multi_session_dir, 'retinotopy_areas.pkl')
+        with open(areas_pkl_path, 'rb') as f:
+            areas_verts = pickle.load(f)
+
+        retino = np.load(os.path.join(self.multi_session_dir, 'retinotopy.npz'))
+        vfs_h, vfs_w = retino['vfs'].shape
+        scale_x = 400.0 / vfs_w
+        scale_y = 400.0 / vfs_h
+
+        scaled = {}
+        for area, verts in areas_verts.items():
+            scaled[area] = [(x * scale_x, y * scale_y) for x, y in verts]
+        return scaled
 
     def draw_areas(self):
 
@@ -635,9 +648,83 @@ class WidefieldMapper:
         
         plt.tight_layout()
         plt.show()
-        
+
         return fig, (ax1, ax2)
-    
+
+    def plot_cell_in_retinotopy_maps(self, session_name, cell_id, session_df=None):
+        """
+        Plot a single cell on the azi and alt maps to visually verify the
+        stored azi/alt values match the map values at the cell's transformed
+        location.
+
+        The scatter marker is filled using the stored value with the same
+        colormap and vmin/vmax as the background — a correct assignment makes
+        the marker blend into the surrounding pixel.
+
+        Pass a `session_df` that already contains 'azi' and 'alt' columns
+        (i.e. the registered df returned by append_widefield_to_session_df).
+        If omitted, falls back to loading <session_name>_dataframe_registered.pkl.
+        """
+        if session_df is None:
+            session_data_dir = os.path.join(self.processed_data_dir, session_name)
+            df_path = os.path.join(session_data_dir, session_name + '_dataframe_registered.pkl')
+            with open(df_path, 'rb') as f:
+                session_df = pickle.load(f)
+        match = session_df[session_df['cell_id'] == cell_id]
+        if match.empty:
+            raise ValueError(
+                f"cell_id {cell_id} not found in session_df for {session_name}. "
+                "Run append_widefield_to_session_df() first."
+            )
+        cell_row = match.iloc[0]
+        stored_azi = cell_row['azi']
+        stored_alt = cell_row['alt']
+
+        suite2p_stat = self.load_suite2p_stat(session_name)
+        xpix, ypix = self.get_original_coords(suite2p_stat, cell_id)
+        xwf, ywf = self.transform_coords_to_widefield(session_name, xpix, ypix)
+
+        azi_map = self.aligner_params['wf_maps']['azi']
+        alt_map = self.aligner_params['wf_maps']['alt']
+        map_azi = azi_map[int(ywf), int(xwf)]
+        map_alt = alt_map[int(ywf), int(xwf)]
+
+        azi_vmin, azi_vmax = np.nanmin(azi_map), np.nanmax(azi_map)
+        alt_vmin, alt_vmax = np.nanmin(alt_map), np.nanmax(alt_map)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+        im1 = ax1.imshow(azi_map, cmap='jet', vmin=azi_vmin, vmax=azi_vmax,
+                         extent=[0, 400, 400, 0], origin='upper')
+        plt.colorbar(im1, ax=ax1)
+        ax1.scatter(xwf, ywf, c=[stored_azi], cmap='jet',
+                    vmin=azi_vmin, vmax=azi_vmax,
+                    s=120, edgecolors='white', linewidths=1.5)
+        ax1.annotate(f'{stored_azi:.2f}', (xwf, ywf),
+                     xytext=(8, -8), textcoords='offset points',
+                     color='white', fontsize=9)
+        ax1.set_title(f'Azi — cell {cell_id} (stored={stored_azi:.2f}, map={map_azi:.2f})')
+        ax1.set_xlabel('X (pixels)')
+        ax1.set_ylabel('Y (pixels)')
+
+        im2 = ax2.imshow(alt_map, cmap='jet', vmin=alt_vmin, vmax=alt_vmax,
+                         extent=[0, 400, 400, 0], origin='upper')
+        plt.colorbar(im2, ax=ax2)
+        ax2.scatter(xwf, ywf, c=[stored_alt], cmap='jet',
+                    vmin=alt_vmin, vmax=alt_vmax,
+                    s=120, edgecolors='white', linewidths=1.5)
+        ax2.annotate(f'{stored_alt:.2f}', (xwf, ywf),
+                     xytext=(8, -8), textcoords='offset points',
+                     color='white', fontsize=9)
+        ax2.set_title(f'Alt — cell {cell_id} (stored={stored_alt:.2f}, map={map_alt:.2f})')
+        ax2.set_xlabel('X (pixels)')
+        ax2.set_ylabel('Y (pixels)')
+
+        plt.tight_layout()
+        plt.show()
+
+        return fig, (ax1, ax2)
+
     def append_widefield_to_session_df(self, session_name):
 
         """

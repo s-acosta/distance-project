@@ -76,8 +76,8 @@ class WidefieldAligner:
             self.aligner_params = self.import_alignment_parameters()
             print(f"Alignment parameters loaded from: {self.multi_session_dir + '/' + self.animal_id + '_' + self.experiment_name + '_alignment_parameters.pkl'}")
         except:
-            print("No alignment parameters found. Drawing areas and aligning sessions.")
-            self.areas_verts = self.draw_areas()
+            print("No alignment parameters found. Loading areas from retinotopy_areas.pkl and aligning sessions.")
+            self.areas_verts = self.load_areas_from_pkl()
             self.wf_transformations = self.align_all_sessions_to_widefield()
             self.export_alignment_parameters()
             self.aligner_params = self.import_alignment_parameters()
@@ -136,29 +136,42 @@ class WidefieldAligner:
 
         widefield_maps = {}
 
-        # Load the snap.mat file from the animal directory
         snap_mat_path = os.path.join(self.multi_session_dir, 'snap.mat')
-        snap_data = loadmat(snap_mat_path)
-        widefield_img = snap_data['snap']
-        # resize widefield_img to the size of 400x400
+        retino_path = os.path.join(self.multi_session_dir, 'retinotopy.npz')
+        retino_data = np.load(retino_path)
+
+        if os.path.exists(snap_mat_path):
+            snap_data = loadmat(snap_mat_path)
+            widefield_img = snap_data['snap']
+        else:
+            widefield_img = retino_data['f0']
         widefield_img = cv2.resize(widefield_img, (400, 400))
         widefield_maps['img'] = widefield_img
 
-        maps_mat_path = os.path.join(self.multi_session_dir, 'maps.mat')
-        maps_data = loadmat(maps_mat_path, struct_as_record=False, squeeze_me=True)
-        VFS_raw = maps_data['maps'].VFS_raw
-        VFS_filtered = gaussian_filter(VFS_raw, sigma=1.5)
-        widefield_maps['VFS'] = VFS_filtered
-
-        alt_raw = maps_data['maps'].VerticalRetinotopy
-        alt_filtered = gaussian_filter(alt_raw, sigma=1.5)
-        widefield_maps['alt'] = alt_filtered
-
-        azi_raw = maps_data['maps'].HorizontalRetinotopy
-        azi_filtered = gaussian_filter(azi_raw, sigma=1.5)
-        widefield_maps['azi'] = azi_filtered
+        vfs = cv2.resize(retino_data['vfs'], (400, 400))
+        alt = cv2.resize(retino_data['altitude_map'], (400, 400))
+        azi = cv2.resize(retino_data['azimuth_map'], (400, 400))
+        widefield_maps['VFS'] = gaussian_filter(vfs, sigma=1.5)
+        widefield_maps['alt'] = gaussian_filter(alt, sigma=1.5)
+        widefield_maps['azi'] = gaussian_filter(azi, sigma=1.5)
 
         return widefield_maps
+
+    def load_areas_from_pkl(self):
+
+        areas_pkl_path = os.path.join(self.multi_session_dir, 'retinotopy_areas.pkl')
+        with open(areas_pkl_path, 'rb') as f:
+            areas_verts = pickle.load(f)
+
+        retino = np.load(os.path.join(self.multi_session_dir, 'retinotopy.npz'))
+        vfs_h, vfs_w = retino['vfs'].shape
+        scale_x = 400.0 / vfs_w
+        scale_y = 400.0 / vfs_h
+
+        scaled = {}
+        for area, verts in areas_verts.items():
+            scaled[area] = [(x * scale_x, y * scale_y) for x, y in verts]
+        return scaled
 
     def draw_areas(self):
 
@@ -414,12 +427,24 @@ class WidefieldAligner:
             )
             fig.canvas.draw_idle()
 
+        def on_key(event):
+            step = 1
+            if event.key == 'right':
+                slider_dx.set_val(np.clip(slider_dx.val + step, -slider_limit_px, slider_limit_px))
+            elif event.key == 'left':
+                slider_dx.set_val(np.clip(slider_dx.val - step, -slider_limit_px, slider_limit_px))
+            elif event.key == 'up':
+                slider_dy.set_val(np.clip(slider_dy.val - step, -slider_limit_px, slider_limit_px))
+            elif event.key == 'down':
+                slider_dy.set_val(np.clip(slider_dy.val + step, -slider_limit_px, slider_limit_px))
+
         # Connect sliders to update function
         slider_scale.on_changed(update)
         slider_rotation.on_changed(update)
         slider_dx.on_changed(update)
         slider_dy.on_changed(update)
         slider_alpha.on_changed(update)
+        fig.canvas.mpl_connect('key_press_event', on_key)
 
         plt.show(block=True)
 

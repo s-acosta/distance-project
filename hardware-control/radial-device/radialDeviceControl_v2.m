@@ -23,8 +23,8 @@ arguments
     options.distances = [0, 1, 2, 3, 4];
     options.time_per_trial = 12;
     options.n_repeats = 2;
-    options.start_angle = -30;
-    options.end_angle = 60;
+    options.start_angle = 60;
+    options.end_angle = -30;
     options.off_time = 1;  % seconds
     options.raise_time = 250;  % ms for raising servo
     options.lower_time = 100;  % ms for lowering servo

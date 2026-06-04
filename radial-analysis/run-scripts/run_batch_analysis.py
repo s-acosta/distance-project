@@ -13,6 +13,7 @@ Usage:
 import sys
 import argparse
 sys.path.append(r"C:\Users\acostamendoza\projects\distance-project")
+sys.path.append(r"C:\Users\acostamendoza\projects\distance-project\radial-analysis")
 from path_setup import setup_project_path
 setup_project_path()
 

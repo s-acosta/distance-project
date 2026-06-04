@@ -2,8 +2,11 @@ function stim_log = teensyStimulusBoth(start_point, end_point, opts)
 % Present binocular stimulus on two Teensys simultaneously across disparity conditions.
 %
 % Positions are specified in a common reference frame where:
-%   Left eye pixel  = -common_position
-%   Right eye pixel =  common_position + opts.offset + D
+%   Left eye pixel  = common_position - opts.offset  (in [-W, 0]; inner edge = 0)
+%   Right eye pixel = common_position + opts.offset + D  (in [0, W]; inner edge = 0)
+%
+% The offset shifts each eye symmetrically outward from center (half the inter-screen gap).
+% Disparity D shifts only the right eye, creating binocular disparity.
 %
 % This ensures both eyes see the ball moving in the same visual direction.
 % Frames are precomputed per disparity condition using make_ball_frame; no video files needed.
@@ -34,8 +37,8 @@ arguments
     start_point  (1,1) double
     end_point    (1,1) double
     opts.stim_size    (1,1) double = 30
-    opts.disparities   (1,:) double = [-50, 0, 50]          % Right-eye disparity offsets in common frame (px)
-    opts.offset        (1,1) double = 90          % Constant baseline shift for right eye (common frame px)
+    opts.disparities   (1,:) double = 0         % Right-eye disparity offsets in common frame (px)
+    opts.offset        (1,1) double = 16.5         % Half inter-screen gap (px); left eye offset = -offset, right = +offset
     opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
     opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
     opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard
@@ -68,9 +71,9 @@ total_dur       = trial_dur * total_trials;
 % Common frame positions for each stimulus frame
 common_frame_positions = linspace(start_point, end_point, num_stim_frames);
 
-% Left eye pixel endpoints (same for every trial)
-left_start_px = -common_frame_positions(1);
-left_end_px   = -common_frame_positions(end);
+% Left eye pixel endpoints in common frame (same for every trial)
+left_start_px = common_frame_positions(1)   - opts.offset;
+left_end_px   = common_frame_positions(end) - opts.offset;
 
 % === PRE-COMPUTE FRAMES ===
 if opts.verbose
@@ -85,14 +88,14 @@ gray_img_L     = rotate_for_eye(uint8(ones(opts.H, opts.W, 3) * round(127 * opts
 gray_payload_R = rgb565_payload(gray_img_R);
 gray_payload_L = rgb565_payload(gray_img_L);
 
-% Left eye: left_pixel = -common_position
-% Ball is visible when left_pixel in [0, W]; otherwise gray
+% Left eye: left_pixel = common_position - offset  (lives in [-W, 0])
+% Ball is visible when left_pixel in [-W, 0]; pass -left_pixel to make_ball_frame (flips direction)
 left_eye_frames   = cell(1, num_stim_frames);
 left_eye_payloads = cell(1, num_stim_frames);
 for frame_idx = 1:num_stim_frames
-    left_pixel_position = -common_frame_positions(frame_idx);
-    if left_pixel_position >= 0 && left_pixel_position <= opts.W
-        ball_frame = make_ball_frame(left_pixel_position, opts.stim_size, ...
+    left_pixel_position = common_frame_positions(frame_idx) - opts.offset;
+    if left_pixel_position >= -opts.W && left_pixel_position <= 0
+        ball_frame = make_ball_frame(-left_pixel_position, opts.stim_size, ...
                                      opts.W, opts.H, opts.rcycles, opts.tcycles, ...
                                      opts.bw, opts.brightness);
         left_eye_frames{frame_idx}   = rotate_for_eye(ball_frame, 'left');
@@ -104,7 +107,8 @@ for frame_idx = 1:num_stim_frames
 end
 
 if opts.verbose
-    n_visible_L = sum(-common_frame_positions >= 0 & -common_frame_positions <= opts.W);
+    left_positions = common_frame_positions - opts.offset;
+    n_visible_L = sum(left_positions >= -opts.W & left_positions <= 0);
     fprintf('  Left eye:  %d/%d frames visible\n', n_visible_L, num_stim_frames);
 end
 

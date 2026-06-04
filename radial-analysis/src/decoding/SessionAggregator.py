@@ -12,7 +12,6 @@ import pandas as pd
 from typing import Dict, Tuple, List, Iterator, Optional
 
 from sklearn.model_selection import train_test_split, StratifiedKFold
-
 from src.data.RadialDevice import RadialDevice
 from src.workflows import load_dataframe
 
@@ -837,6 +836,111 @@ class SessionAggregator:
             'coverage': coverage,
             'cell_indices': cell_indices,
         }
+
+    def plot_rf_cell_distribution(self, bin_size, monocular=0, area=None):
+        """Plot the distribution of cells across RF angle bins.
+
+        Use this to explore how many cells fall in each angle bin before
+        deciding on a bin size for balanced sampling.
+
+        Parameters
+        ----------
+        bin_size  : float   bin width in degrees
+        monocular : int     0 = binocular, 1 = monocular (default 0)
+        area      : str     visual area filter (None = all)
+
+        Returns
+        -------
+        bin_edges : np.ndarray
+        counts    : np.ndarray  number of cells per bin
+        """
+        import matplotlib.pyplot as plt
+
+        rf_positions, _ = self.compute_rf_positions(monocular=monocular, area=area)
+        rf_angles = self.angle_axis[rf_positions]
+
+        lo, hi = self.angle_axis[0], self.angle_axis[-1]
+        bin_edges = np.arange(lo, hi + bin_size, bin_size)
+        counts, bin_edges = np.histogram(rf_angles, bins=bin_edges)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        n_per_bin = int(counts[counts > 0].min()) if counts.any() else 0
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.bar(bin_centers, counts, width=bin_size * 0.85, color='steelblue', edgecolor='white')
+        ax.axhline(n_per_bin, color='firebrick', linestyle='--', linewidth=1.5,
+                   label=f'min = {n_per_bin}')
+        ax.set_xlabel('RF angle (°)')
+        ax.set_ylabel('Cell count')
+        ax.set_title(f'RF distribution  |  bin_size={bin_size}°  |  n_cells={len(rf_angles)}')
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+
+        print(f"{'Bin':>18}  {'Count':>6}")
+        print('-' * 28)
+        for lo_b, hi_b, c in zip(bin_edges[:-1], bin_edges[1:], counts):
+            print(f"[{lo_b:+.1f}°, {hi_b:+.1f}°)  {c:>6}")
+        print('-' * 28)
+        print(f"{'Minimum (non-empty):':>22}  {n_per_bin:>6}")
+
+        return bin_edges, counts
+
+    def get_balanced_cell_idx(self, bin_size, n_per_bin=None, monocular=0, area=None,
+                              random_state=None):
+        """Return a cell_idx array with equal representation across RF angle bins.
+
+        Cells are binned by their preferred angle (RF peak). The same number of
+        cells is sampled from each bin. Pass the result as cell_idx to any
+        decoder's cross_validate method.
+
+        Parameters
+        ----------
+        bin_size     : float   bin width in degrees
+        n_per_bin    : int or None
+            Cells to sample per bin. If None, uses the minimum non-empty bin count.
+        monocular    : int     0 = binocular, 1 = monocular (default 0)
+        area         : str     visual area filter (None = all)
+        random_state : int or None
+
+        Returns
+        -------
+        cell_idx : np.ndarray of int
+            Sorted 0-based indices into X (as returned by get_decoder_data).
+        """
+        rng = np.random.default_rng(random_state)
+
+        rf_positions, _ = self.compute_rf_positions(monocular=monocular, area=area)
+        rf_angles = self.angle_axis[rf_positions]
+
+        lo, hi = self.angle_axis[0], self.angle_axis[-1]
+        bin_edges = np.arange(lo, hi + bin_size, bin_size)
+
+        bins = []
+        for lo_b, hi_b in zip(bin_edges[:-1], bin_edges[1:]):
+            mask = (rf_angles >= lo_b) & (rf_angles < hi_b)
+            idx = np.where(mask)[0]
+            if len(idx) > 0:
+                bins.append(idx)
+
+        if n_per_bin is None:
+            n_per_bin = min(len(b) for b in bins)
+
+        for b in bins:
+            if len(b) < n_per_bin:
+                import warnings
+                warnings.warn(
+                    f'A bin has only {len(b)} cells but n_per_bin={n_per_bin}. '
+                    f'Consider reducing n_per_bin or increasing bin_size.',
+                    UserWarning, stacklevel=2,
+                )
+                break
+
+        sampled = []
+        for b in bins:
+            chosen = rng.choice(b, size=n_per_bin, replace=False)
+            sampled.append(chosen)
+
+        return np.sort(np.concatenate(sampled))
 
     def get_decoder_data_by_condition(
         self,

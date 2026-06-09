@@ -1,6 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.special import logsumexp, softmax
+import matplotlib.animation as animation
+import matplotlib.colors as mcolors
+from scipy.special import logsumexp
+from scipy.ndimage import gaussian_filter
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import StratifiedKFold, KFold, LeaveOneOut
 
@@ -663,7 +666,6 @@ class FactoredMLE:
         return (np.array(a_pred), np.array(d_pred),
                 np.array(a_true), np.array(d_true))
 
-
 class TrialDecoder:
     """Cross-validated single-trial decoder.
 
@@ -790,20 +792,80 @@ class TrialDecoder:
             print(f"  Dist Acc:     {res['dist_acc_by_pos'].mean():.1%}")
         print("=" * 40)
 
-    def plot_distance_results(self, bino_res, mono_res, title=''):
-        """Distance decoding summary: accuracy by position (row 1) and confusion matrices by angle range (row 2).
+    def cross_validate_balanced(self, agg, monocular, bin_size, n_per_bin=None,
+                                 n_cell_repeats=10, area=None, session=None,
+                                 n_folds=5, random_state=None, verbose=True):
+        """Cross-validate with repeated balanced RF cell sampling.
 
-        Mirrors AveragedDecoder.plot_distance_results but for single-trial data.
-
-        Row 1 : accuracy vs angle position for both conditions overlaid,
-                with SEM band across trials.
-        Row 2 : confusion matrices — rows = condition (bino / mono), cols = angle range.
+        For each repeat, draws a fresh random subset of cells with equal
+        representation per RF angle bin, runs cross_validate, then averages
+        angle MAE and distance accuracy across repeats.
 
         Parameters
         ----------
-        bino_res : dict  output of self.cross_validate (binocular)
-        mono_res : dict  output of self.cross_validate (monocular)
-        title    : str   optional figure suptitle
+        agg            : SessionAggregator
+        monocular      : int   0 = binocular, 1 = monocular
+        bin_size       : float  RF bin width in degrees
+        n_per_bin      : int or None  cells per bin (None = minimum bin count)
+        n_cell_repeats : int   number of cell-sampling repeats (default 10)
+        area           : str or None
+        session        : int or None
+        n_folds        : int   CV folds per repeat (default 5)
+        random_state   : int or None  base seed (each repeat uses seed + rep)
+        verbose        : bool
+
+        Returns
+        -------
+        dict with keys:
+            angle_mae_by_pos     shape (n_positions,)   mean across cell repeats
+            dist_acc_by_pos      shape (n_positions,)   mean across cell repeats
+            angle_mae_by_pos_all shape (n_cell_repeats, n_positions)
+            dist_acc_by_pos_all  shape (n_cell_repeats, n_positions)
+            angle_axis, distances  from last repeat
+        """
+        all_mae = []
+        all_acc = []
+
+        for rep in range(n_cell_repeats):
+            if verbose:
+                print(f'Cell repeat {rep + 1}/{n_cell_repeats}', end='\r')
+
+            seed = None if random_state is None else random_state + rep
+            cell_idx = agg.get_balanced_cell_idx(
+                bin_size=bin_size, n_per_bin=n_per_bin,
+                monocular=monocular, area=area, random_state=seed,
+            )
+            res = self.cross_validate(agg, monocular=monocular, area=area,
+                                      session=session, n_folds=n_folds,
+                                      cell_idx=cell_idx, verbose=False)
+            all_mae.append(res['angle_mae_by_pos'])
+            all_acc.append(res['dist_acc_by_pos'])
+
+        mae_all = np.stack(all_mae)   # (n_cell_repeats, n_positions)
+        acc_all = np.stack(all_acc)   # (n_cell_repeats, n_positions)
+
+        out = dict(
+            angle_mae_by_pos     = mae_all.mean(axis=0),
+            dist_acc_by_pos      = acc_all.mean(axis=0),
+            angle_mae_by_pos_all = mae_all,
+            dist_acc_by_pos_all  = acc_all,
+            angle_axis           = res['angle_axis'],
+            distances            = res['distances'],
+        )
+        if verbose:
+            print()
+            self._print_results(out)
+        return out
+
+    def plot_distance_results(self, bino_res, mono_res, title='', labels=None):
+        """Distance accuracy vs angle position for binocular and monocular conditions.
+
+        Parameters
+        ----------
+        bino_res : dict  output of cross_validate or cross_validate_balanced (binocular)
+        mono_res : dict  output of cross_validate or cross_validate_balanced (monocular)
+        title    : str
+        labels   : tuple of str, optional
 
         Returns
         -------
@@ -811,34 +873,25 @@ class TrialDecoder:
         """
         angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
         range_colors = ['firebrick', 'mediumpurple', 'steelblue']
-        range_cmaps  = ['Reds',      'Purples',      'Blues'    ]
         cond_colors  = ['steelblue', 'firebrick']
-        cond_labels  = ['Binocular', 'Monocular']
+        cond_labels  = list(labels) if labels is not None else ['Binocular', 'Monocular']
 
-        angle_axis  = bino_res['angle_axis']
-        distances   = bino_res['distances']
-        n_distances = len(distances)
-        chance      = 100 / n_distances
+        angle_axis = bino_res['angle_axis']
+        chance     = 100 / len(bino_res['distances'])
 
-        fig, axes = plt.subplot_mosaic(
-            [['top', 'top', 'top'],
-             ['b0',  'b1',  'b2' ],
-             ['m0',  'm1',  'm2' ]],
-            figsize=(15, 15),
-            gridspec_kw={'height_ratios': [1.5, 1, 1], 'hspace': 0.5, 'wspace': 0},
-        )
+        fig, ax = plt.subplots(figsize=(10, 4))
 
-        # Row 0: accuracy by angle position (both conditions on one plot)
-        ax = axes['top']
         for res, color, label in zip([bino_res, mono_res], cond_colors, cond_labels):
-            pred     = res['pred_dist']   # (n_trials, n_positions)
-            true     = res['true_dist']   # (n_trials,)
-            n_trials = len(true)
-
-            # per-trial accuracy at each position: shape (n_trials, n_positions)
-            correct_by_trial = (pred == true[:, np.newaxis]).astype(float) * 100
-            acc_mean = correct_by_trial.mean(axis=0)
-            acc_sem  = correct_by_trial.std(axis=0) / np.sqrt(n_trials)
+            if 'dist_acc_by_pos_all' in res:
+                acc_all  = res['dist_acc_by_pos_all'] * 100
+                acc_mean = acc_all.mean(axis=0)
+                acc_sem  = acc_all.std(axis=0) / np.sqrt(len(acc_all))
+            else:
+                pred    = res['pred_dist']
+                true    = res['true_dist']
+                correct = (pred == true[:, np.newaxis]).astype(float) * 100
+                acc_mean = correct.mean(axis=0)
+                acc_sem  = correct.std(axis=0) / np.sqrt(len(true))
 
             ax.plot(angle_axis, acc_mean, color=color, linewidth=1.8, label=label)
             ax.fill_between(angle_axis, acc_mean - acc_sem, acc_mean + acc_sem,
@@ -850,35 +903,113 @@ class TrialDecoder:
                    label=f'Chance ({chance:.0f}%)')
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
         ax.set(xlabel='Angle (°)', ylabel='Accuracy (%)', ylim=(0, 100))
-        ax.set_title('Distance accuracy by position', pad=25)
-        ax.legend(fontsize=12)
+        ax.set_title('Distance accuracy by position')
+        ax.legend()
+        if title:
+            fig.suptitle(title, fontsize=16)
+        plt.tight_layout()
+        return fig
 
-        # Rows 1-2: confusion matrices (row=condition, col=range)
-        cm_keys = [['b0', 'b1', 'b2'], ['m0', 'm1', 'm2']]
-        for res, cond_label, keys in zip([bino_res, mono_res], cond_labels, cm_keys):
-            pred = res['pred_dist']   # (n_trials, n_positions)
-            true = res['true_dist']   # (n_trials,)
+    def plot_distance_results_multi(self, bino_res_list, mono_res_list, title='', labels=None):
+        """Distance accuracy vs angle position averaged across animals.
 
-            for col, ((lo, hi), color, cmap, key) in enumerate(
-                    zip(angle_ranges, range_colors, range_cmaps, keys)):
-                ax        = axes[key]
-                pos_mask  = (angle_axis >= lo) & (angle_axis < hi)
-                d_true_flat = np.repeat(true, pos_mask.sum())
-                d_pred_flat = pred[:, pos_mask].ravel()
+        Parameters
+        ----------
+        bino_res_list : list of dict   one cross_validate result per animal (binocular)
+        mono_res_list : list of dict   one cross_validate result per animal (monocular)
+        title         : str
+        labels        : tuple of str, optional
 
-                cm = confusion_matrix(d_true_flat, d_pred_flat,
-                                      labels=distances, normalize='true')
-                disp = ConfusionMatrixDisplay(cm, display_labels=[f'{d}' for d in distances])
-                disp.plot(ax=ax, colorbar=False, cmap=cmap)
-                for text in disp.text_.ravel():
-                    text.set_text(f'{float(text.get_text()):.1f}' if text.get_text() else '')
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
+        range_colors = ['firebrick', 'mediumpurple', 'steelblue']
+        cond_colors  = ['steelblue', 'firebrick']
+        cond_labels  = list(labels) if labels is not None else ['Binocular', 'Monocular']
 
-                acc = (d_pred_flat == d_true_flat).mean() * 100
-                ax.set_title(f'{cond_label}  {lo}° to {hi}°\nacc={acc:.1f}%', color=color)
-                if col > 0:
-                    ax.set_ylabel('')
+        angle_axis = bino_res_list[0]['angle_axis']
+        chance     = 100 / len(bino_res_list[0]['distances'])
 
-        fig.suptitle(title, fontsize=22, y=0.95)
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        for res_list, color, label in zip([bino_res_list, mono_res_list], cond_colors, cond_labels):
+            animal_means = []
+            for res in res_list:
+                if 'dist_acc_by_pos_all' in res:
+                    acc_mean = res['dist_acc_by_pos_all'].mean(axis=0) * 100
+                else:
+                    pred    = res['pred_dist']
+                    true    = res['true_dist']
+                    correct = (pred == true[:, np.newaxis]).astype(float) * 100
+                    acc_mean = correct.mean(axis=0)
+                animal_means.append(acc_mean)
+
+            animal_means = np.stack(animal_means)   # (n_animals, n_positions)
+            mean = animal_means.mean(axis=0)
+            sem  = animal_means.std(axis=0) / np.sqrt(len(res_list))
+
+            ax.plot(angle_axis, mean, color=color, linewidth=1.8, label=label)
+            ax.fill_between(angle_axis, mean - sem, mean + sem, color=color, alpha=0.2)
+
+        for i, (lo, hi) in enumerate(angle_ranges):
+            ax.axvspan(lo, hi, color=range_colors[i], alpha=0.08, zorder=0)
+        ax.axhline(chance, color='gray', linestyle=':', linewidth=1,
+                   label=f'Chance ({chance:.0f}%)')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+        ax.set(xlabel='Angle (°)', ylabel='Accuracy (%)', ylim=(0, 100))
+        ax.set_title('Distance accuracy by position')
+        ax.legend()
+        if title:
+            fig.suptitle(title, fontsize=16)
+        plt.tight_layout()
+        return fig
+
+    def plot_angle_results(self, bino_res, mono_res, title='', labels=None):
+        """Angle MAE vs angle position for binocular and monocular conditions.
+
+        Parameters
+        ----------
+        bino_res : dict  output of cross_validate or cross_validate_balanced (binocular)
+        mono_res : dict  output of cross_validate or cross_validate_balanced (monocular)
+        title    : str
+        labels   : tuple of str, optional
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
+        range_colors = ['firebrick', 'mediumpurple', 'steelblue']
+        cond_colors  = ['steelblue', 'firebrick']
+        cond_labels  = list(labels) if labels is not None else ['Binocular', 'Monocular']
+
+        angle_axis = bino_res['angle_axis']
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        for res, color, label in zip([bino_res, mono_res], cond_colors, cond_labels):
+            if 'angle_mae_by_pos_all' in res:
+                mae_all  = res['angle_mae_by_pos_all']
+                mae_mean = mae_all.mean(axis=0)
+                mae_sem  = mae_all.std(axis=0) / np.sqrt(len(mae_all))
+            else:
+                err      = np.abs(res['pred_angle'] - res['true_angle'])
+                mae_mean = err.mean(axis=0)
+                mae_sem  = err.std(axis=0) / np.sqrt(err.shape[0])
+
+            ax.plot(angle_axis, mae_mean, color=color, linewidth=1.8, label=label)
+            ax.fill_between(angle_axis, mae_mean - mae_sem, mae_mean + mae_sem,
+                            color=color, alpha=0.2)
+
+        for i, (lo, hi) in enumerate(angle_ranges):
+            ax.axvspan(lo, hi, color=range_colors[i], alpha=0.08, zorder=0)
+        ax.set(xlabel='Angle (°)', ylabel='MAE (°)')
+        ax.set_title('Angle MAE by position')
+        ax.legend()
+        if title:
+            fig.suptitle(title, fontsize=16)
         plt.tight_layout()
         return fig
 
@@ -1108,6 +1239,289 @@ class TrialDecoder:
         plt.tight_layout()
         return fig
 
+    _DISTANCE_CM = np.array([10, 16, 22, 28])
+
+    def plot_trial_frame(self, X, trial_id, angle_idx, y_distance, distance_levels, deg_axis, ax=None):
+        """Polar likelihood heatmap for a single trial and angle snapshot.
+
+        Fits the model leave-one-out on the given trial, decodes the population
+        response at ``angle_idx``, and plots the (n_positions x n_distances)
+        log-likelihood grid on a polar axis.
+
+        Parameters
+        ----------
+        X               : np.ndarray, shape (n_neurons, n_angles, n_trials)
+        trial_id        : int   index of the trial to visualise
+        angle_idx       : int   angle position index to decode
+        y_distance      : np.ndarray, shape (n_trials,)  distance label per trial
+        distance_levels : np.ndarray, shape (n_distances,)
+        deg_axis        : np.ndarray, shape (n_angles,)  degree value per position
+        ax              : matplotlib polar Axes or None
+
+        Returns
+        -------
+        fig, ax
+        """
+        n_neurons, n_angles, n_trials = X.shape
+        n_dist = len(distance_levels)
+        dist_cm = self._DISTANCE_CM[:n_dist]
+
+        # LOO fit
+        train_idx = np.delete(np.arange(n_trials), trial_id)
+        templates = np.zeros((n_neurons, n_angles, n_dist))
+        for i, d_val in enumerate(distance_levels):
+            mask = y_distance[train_idx] == d_val
+            if mask.any():
+                templates[:, :, i] = X[:, :, train_idx[mask]].mean(axis=2)
+
+        dec = self.model().fit(templates)
+        pred_pos, pred_d, scores = dec.decode(X[:, angle_idx, trial_id])
+
+        ll = scores - scores.max()
+
+        true_d_idx = int(np.searchsorted(distance_levels, y_distance[trial_id]))
+
+        theta       = np.deg2rad(deg_axis)
+        dtheta      = theta[1] - theta[0]
+        theta_edges = np.append(theta - dtheta / 2, theta[-1] + dtheta / 2)
+        r_edges     = np.arange(n_dist + 1)
+
+        if ax is None:
+            fig, ax = plt.subplots(subplot_kw=dict(projection='polar'), figsize=(7, 6))
+        else:
+            fig = ax.figure
+
+        ax.set_theta_zero_location('N')
+        ax.set_theta_direction(-1)
+
+        mesh = ax.pcolormesh(theta_edges, r_edges, ll.T, cmap='magma', shading='flat',
+                             vmin=np.percentile(ll, 5))
+
+        ax.set_thetamin(deg_axis[0])
+        ax.set_thetamax(deg_axis[-1])
+
+        ax.plot(np.deg2rad(deg_axis[angle_idx]), true_d_idx + 0.5,
+                'c*', markersize=18, zorder=5, label='True')
+        ax.plot(np.deg2rad(deg_axis[pred_pos]), pred_d + 0.5,
+                'b^', markersize=14, zorder=5, markeredgecolor='white', markeredgewidth=1.5,
+                label='Decoded')
+
+        ax.set_rticks(np.arange(n_dist) + 0.5)
+        ax.set_yticklabels([f'{d} cm' for d in dist_cm])
+        ax.set_rlabel_position(deg_axis[-1] + 3)
+        ax.set_thetagrids(np.linspace(deg_axis[0], deg_axis[-1], 6).round())
+
+        ax.set_title(
+            f'Trial {trial_id}  ·  pos {deg_axis[angle_idx]:.0f}°  ·  true dist {dist_cm[true_d_idx]} cm',
+            pad=20
+        )
+        ax.legend(loc='upper left', bbox_to_anchor=(-0.2, 1.1), framealpha=0.5)
+        plt.colorbar(mesh, ax=ax, label='log-likelihood (relative to max)', shrink=0.7, pad=0.1)
+
+        return fig, ax
+
+    def plot_trial_frames(self, X, trial_id, angle_indices, y_distance, distance_levels, deg_axis):
+        """Plot multiple angle positions for one trial side by side with a shared colorscale.
+
+        Parameters
+        ----------
+        X               : np.ndarray, shape (n_neurons, n_angles, n_trials)
+        trial_id        : int
+        angle_indices   : list of int
+        y_distance      : np.ndarray, shape (n_trials,)
+        distance_levels : np.ndarray, shape (n_distances,)
+        deg_axis        : np.ndarray, shape (n_angles,)
+
+        Returns
+        -------
+        fig
+        """
+        n_neurons, n_angles, n_trials = X.shape
+        n_dist  = len(distance_levels)
+        dist_cm = self._DISTANCE_CM[:n_dist]
+
+        # LOO fit once — same train set for all angle positions
+        train_idx = np.delete(np.arange(n_trials), trial_id)
+        templates = np.zeros((n_neurons, n_angles, n_dist))
+        for i, d_val in enumerate(distance_levels):
+            mask = y_distance[train_idx] == d_val
+            if mask.any():
+                templates[:, :, i] = X[:, :, train_idx[mask]].mean(axis=2)
+
+        dec = self.model().fit(templates)
+        true_d_idx = int(np.searchsorted(distance_levels, y_distance[trial_id]))
+
+        if isinstance(angle_indices, (int, np.integer)):
+            angle_indices = [angle_indices]
+
+        # Colorscale from full trajectory (all angle positions)
+        all_lls = []
+        for a in range(n_angles):
+            _, _, scores_a = dec.decode(X[:, a, trial_id])
+            all_lls.append(scores_a - scores_a.max())
+        global_vmin = np.percentile(np.concatenate([ll.ravel() for ll in all_lls]), 5)
+
+        # Decode only the requested angle positions for plotting
+        results = []
+        for angle_idx in angle_indices:
+            pred_pos, pred_d, scores = dec.decode(X[:, angle_idx, trial_id])
+            ll = scores - scores.max()
+            results.append((angle_idx, pred_pos, pred_d, ll))
+
+        theta       = np.deg2rad(deg_axis)
+        dtheta      = theta[1] - theta[0]
+        theta_edges = np.append(theta - dtheta / 2, theta[-1] + dtheta / 2)
+        r_edges     = np.arange(n_dist + 1)
+
+        n = len(angle_indices)
+        fig, axes = plt.subplots(1, n, figsize=(7 * n, 6),
+                                 subplot_kw=dict(projection='polar'))
+        if n == 1:
+            axes = [axes]
+
+        font_props = {'fontsize': 16, 'fontfamily': 'Arial'}
+
+        for ax, (angle_idx, pred_pos, pred_d, ll) in zip(axes, results):
+            ax.set_theta_zero_location('N')
+            ax.set_theta_direction(-1)
+
+            mesh = ax.pcolormesh(theta_edges, r_edges, ll.T, cmap='magma', shading='flat',
+                                 vmin=global_vmin, vmax=0)
+
+            ax.set_thetamin(deg_axis[0])
+            ax.set_thetamax(deg_axis[-1])
+
+            ax.plot(np.deg2rad(deg_axis[angle_idx]), true_d_idx + 0.5,
+                    'c*', markersize=20, zorder=5, label='True')
+            ax.plot(np.deg2rad(deg_axis[pred_pos]), pred_d + 0.5,
+                    'b^', markersize=20, zorder=5, markeredgecolor='white', markeredgewidth=1.5,
+                    label='Decoded')
+
+            ax.set_rticks(np.arange(n_dist) + 0.5)
+            ax.set_yticklabels([f'{d} cm' for d in dist_cm], **font_props)
+            ax.set_rlabel_position(deg_axis[-1] + 3)
+            ax.set_thetagrids(np.linspace(deg_axis[0], deg_axis[-1], 6).round())
+            ax.tick_params(axis='both', labelsize=16)
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontfamily('Arial')
+            ax.set_title(
+                f'Trial {trial_id}  ·  pos {deg_axis[angle_idx]:.0f}°  ·  true dist {dist_cm[true_d_idx]} cm',
+                pad=20, fontsize=20
+            )
+            ax.legend(loc='lower left', bbox_to_anchor=(-0.2, 0.0), framealpha=0.5,
+                      prop={'family': 'Arial', 'size': 16})
+
+        plt.tight_layout()
+        cbar_ax = fig.add_axes([0.65, 0.04, 0.30, 0.025])
+        cbar = fig.colorbar(mesh, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label('log-likelihood', **font_props, labelpad=10)
+        cbar.ax.tick_params(labelsize=16)
+        for lbl in cbar.ax.get_xticklabels():
+            lbl.set_fontfamily('Arial')
+        cbar.ax.xaxis.set_label_position('top')
+        return fig
+
+    def animate_trial(self, X, trial_id, y_distance, distance_levels, deg_axis, interval=None):
+        """Animate log-likelihood map across all angle positions for one trial.
+
+        Parameters
+        ----------
+        X               : np.ndarray, shape (n_neurons, n_angles, n_trials)
+        trial_id        : int
+        y_distance      : np.ndarray, shape (n_trials,)
+        distance_levels : np.ndarray, shape (n_distances,)
+        deg_axis        : np.ndarray, shape (n_angles,)
+        interval        : int, ms between frames (default 100)
+
+        Returns
+        -------
+        anim : matplotlib.animation.FuncAnimation
+            Call anim.save('out.mp4') or display with IPython HTML(anim.to_jshtml())
+        """
+        n_neurons, n_angles, n_trials = X.shape
+        n_dist  = len(distance_levels)
+        dist_cm = self._DISTANCE_CM[:n_dist]
+
+        # LOO fit once
+        train_idx = np.delete(np.arange(n_trials), trial_id)
+        templates = np.zeros((n_neurons, n_angles, n_dist))
+        for i, d_val in enumerate(distance_levels):
+            mask = y_distance[train_idx] == d_val
+            if mask.any():
+                templates[:, :, i] = X[:, :, train_idx[mask]].mean(axis=2)
+
+        dec = self.model().fit(templates)
+        true_d_idx = int(np.searchsorted(distance_levels, y_distance[trial_id]))
+
+        # Decode all angle positions
+        results = []
+        for angle_idx in range(n_angles):
+            pred_pos, pred_d, scores = dec.decode(X[:, angle_idx, trial_id])
+            ll = gaussian_filter(scores - scores.max(), sigma=(2, 0.5))
+            results.append((angle_idx, pred_pos, pred_d, ll))
+
+        # Shared colorscale across all frames
+        global_vmin = np.percentile(np.concatenate([r[3].ravel() for r in results]), 5)
+
+        theta       = np.deg2rad(deg_axis)
+        dtheta      = theta[1] - theta[0]
+        theta_edges = np.append(theta - dtheta / 2, theta[-1] + dtheta / 2)
+        r_edges     = np.arange(n_dist + 1)
+
+        fig, ax = plt.subplots(1, 1, figsize=(7, 6), subplot_kw=dict(projection='polar'))
+        ax.set_theta_zero_location('N')
+        ax.set_theta_direction(-1)
+        ax.set_thetamin(deg_axis[0])
+        ax.set_thetamax(deg_axis[-1])
+        ax.set_rticks(np.arange(n_dist) + 0.5)
+        ax.set_yticklabels([f'{d} cm' for d in dist_cm])
+        ax.set_rlabel_position(deg_axis[-1] + 3)
+        ax.set_thetagrids(np.linspace(deg_axis[0], deg_axis[-1], 6).round())
+        ax.tick_params(axis='both', labelsize=16)
+
+        # Initial frame
+        angle_idx0, pred_pos0, pred_d0, ll0 = results[0]
+        mesh = ax.pcolormesh(theta_edges, r_edges, ll0.T, cmap='magma',
+                             shading='flat', vmin=global_vmin, vmax=0)
+
+        for bound in [-20, 20]:
+            ax.plot([np.deg2rad(bound)] * 2, [r_edges[0], r_edges[-1]],
+                    color='gray', linewidth=3, linestyle='--', alpha=0.8, zorder=3)
+
+        true_pt,  = ax.plot(np.deg2rad(deg_axis[angle_idx0]), true_d_idx + 0.5,
+                            'c*', markersize=18, zorder=5, label='True')
+        pred_pt,  = ax.plot(np.deg2rad(deg_axis[pred_pos0]), pred_d0 + 0.5,
+                            'b^', markersize=14, zorder=5,
+                            markeredgecolor='white', markeredgewidth=1.5, label='Decoded')
+
+        title = ax.set_title(
+            f'Trial {trial_id}  ·  pos {deg_axis[angle_idx0]:.0f}°  ·  true dist {dist_cm[true_d_idx]} cm',
+            pad=20, fontsize=20
+        )
+        ax.legend(loc='lower left', bbox_to_anchor=(-0.2, 0.0), framealpha=0.5)
+
+        plt.tight_layout()
+        cbar_ax = fig.add_axes([0.65, 0.04, 0.30, 0.025])
+        cbar = fig.colorbar(mesh, cax=cbar_ax, orientation='horizontal')
+        cbar.set_label('log-likelihood', fontsize=16, labelpad=10)
+        cbar.ax.xaxis.set_label_position('top')
+
+        def update(i):
+            angle_idx, pred_pos, pred_d, ll = results[i]
+            mesh.set_array(ll.T.ravel())
+            theta_now = np.deg2rad(deg_axis[angle_idx])
+            true_pt.set_data([theta_now], [true_d_idx + 0.5])
+            pred_pt.set_data([np.deg2rad(deg_axis[pred_pos])], [pred_d + 0.5])
+            title.set_text(
+                f'Trial {trial_id}  ·  pos {deg_axis[angle_idx]:.0f}°  ·  true dist {dist_cm[true_d_idx]} cm'
+            )
+            return mesh, true_pt, pred_pt, title
+
+        if interval is None:
+            interval = 12000 / n_angles
+        anim = animation.FuncAnimation(fig, update, frames=n_angles,
+                                       interval=interval, blit=False)
+        return anim
 
 class AveragedDecoder:
     """Cross-validated averaged-trial decoder.
@@ -1199,6 +1613,70 @@ class AveragedDecoder:
             self._print_results(res)
         return res
 
+    def cross_validate_balanced(self, agg, monocular, bin_size, n_per_bin=None,
+                                 n_cell_repeats=10, area=None, n_repeats=10,
+                                 random_state=None, verbose=True):
+        """Cross-validate with repeated balanced RF cell sampling.
+
+        For each cell repeat, draws a fresh random subset of cells with equal
+        representation per RF angle bin, runs cross_validate, then averages
+        angle MAE and distance accuracy across repeats.
+
+        Parameters
+        ----------
+        agg            : SessionAggregator
+        monocular      : int   0 = binocular, 1 = monocular
+        bin_size       : float  RF bin width in degrees
+        n_per_bin      : int or None  cells per bin (None = minimum bin count)
+        n_cell_repeats : int   number of cell-sampling repeats (default 10)
+        area           : str or None
+        n_repeats      : int   train/test repeats per cell sample (default 10)
+        random_state   : int or None  base seed (each repeat uses seed + rep)
+        verbose        : bool
+
+        Returns
+        -------
+        dict with keys:
+            angle_mae_by_pos     shape (n_positions,)   mean across cell repeats
+            dist_acc_by_pos      shape (n_positions,)   mean across cell repeats
+            angle_mae_by_pos_all shape (n_cell_repeats, n_positions)
+            dist_acc_by_pos_all  shape (n_cell_repeats, n_positions)
+            angle_axis, distances  from last repeat
+        """
+        all_mae = []
+        all_acc = []
+
+        for rep in range(n_cell_repeats):
+            if verbose:
+                print(f'Cell repeat {rep + 1}/{n_cell_repeats}', end='\r')
+
+            seed = None if random_state is None else random_state + rep
+            cell_idx = agg.get_balanced_cell_idx(
+                bin_size=bin_size, n_per_bin=n_per_bin,
+                monocular=monocular, area=area, random_state=seed,
+            )
+            res = self.cross_validate(agg, monocular=monocular, area=area,
+                                      n_repeats=n_repeats, cell_idx=cell_idx,
+                                      verbose=False)
+            all_mae.append(res['angle_mae_by_pos'])
+            all_acc.append(res['dist_acc_by_pos'])
+
+        mae_all = np.stack(all_mae)   # (n_cell_repeats, n_positions)
+        acc_all = np.stack(all_acc)   # (n_cell_repeats, n_positions)
+
+        out = dict(
+            angle_mae_by_pos     = mae_all.mean(axis=0),
+            dist_acc_by_pos      = acc_all.mean(axis=0),
+            angle_mae_by_pos_all = mae_all,
+            dist_acc_by_pos_all  = acc_all,
+            angle_axis           = res['angle_axis'],
+            distances            = res['distances'],
+        )
+        if verbose:
+            print()
+            self._print_results(out)
+        return out
+
     @staticmethod
     def _print_results(res):
         print("=" * 40)
@@ -1208,52 +1686,42 @@ class AveragedDecoder:
             print(f"  Dist Acc:     {res['dist_acc_by_pos'].mean():.1%}")
         print("=" * 40)
 
-    def plot_distance_results(self, bino_res, mono_res, title=''):
-        """Distance decoding summary: accuracy by position (row 1) and confusion matrices by angle range (row 2).
-
-        Row 1 : single plot with both conditions overlaid showing distance
-                classification accuracy vs angle position, with SEM band across repeats.
-        Row 2 : confusion matrices — rows = condition (bino / mono), cols = angle range.
+    def plot_distance_results(self, bino_res, mono_res, title='', labels=None):
+        """Distance accuracy vs angle position for binocular and monocular conditions.
 
         Parameters
         ----------
-        bino_res : dict  output of self.cross_validate (binocular)
-        mono_res : dict  output of self.cross_validate (monocular)
-        title    : str   optional figure suptitle
+        bino_res : dict  output of cross_validate or cross_validate_balanced (binocular)
+        mono_res : dict  output of cross_validate or cross_validate_balanced (monocular)
+        title    : str
+        labels   : tuple of str, optional
 
         Returns
         -------
         matplotlib.figure.Figure
         """
-        angle_ranges = [(-30, -15), (-15, 15), (15, 45)]
+        angle_ranges = [(-30, -20), (-20, 20), (20, 40)]
         range_colors = ['firebrick', 'mediumpurple', 'steelblue']
-        range_cmaps  = ['Reds',      'Purples',      'Blues'    ]
         cond_colors  = ['steelblue', 'firebrick']
-        cond_labels  = ['Binocular', 'Monocular']
+        cond_labels  = list(labels) if labels is not None else ['Binocular', 'Monocular']
 
-        angle_axis  = bino_res['angle_axis']
-        distances   = bino_res['distances']
-        n_distances = len(distances)
-        n_repeats   = bino_res['pred_dist'].shape[0]
-        chance      = 100 / n_distances
+        angle_axis = bino_res['angle_axis']
+        chance     = 100 / len(bino_res['distances'])
 
-        fig, axes = plt.subplot_mosaic(
-            [['top', 'top', 'top'],
-             ['b0',  'b1',  'b2' ],
-             ['m0',  'm1',  'm2' ]],
-            figsize=(15, 15),
-            gridspec_kw={'height_ratios': [1.5, 1, 1], 'hspace': 0.5, 'wspace': 0},
-        )
+        fig, ax = plt.subplots(figsize=(10, 4))
 
-        # Row 0: accuracy by angle position (both conditions on one plot)
-        ax = axes['top']
         for res, color, label in zip([bino_res, mono_res], cond_colors, cond_labels):
-            pred = res['pred_dist']   # (n_repeats, n_distances, n_positions)
-            true = res['true_dist']   # (n_distances, n_positions)
-
-            acc_per_rep = (pred == true[np.newaxis]).mean(axis=1) * 100
-            acc_mean    = acc_per_rep.mean(axis=0)
-            acc_sem     = acc_per_rep.std(axis=0) / np.sqrt(n_repeats)
+            if 'dist_acc_by_pos_all' in res:
+                acc_all  = res['dist_acc_by_pos_all'] * 100
+                acc_mean = acc_all.mean(axis=0)
+                acc_sem  = acc_all.std(axis=0) / np.sqrt(len(acc_all))
+            else:
+                pred        = res['pred_dist']
+                true        = res['true_dist']
+                n_rep       = pred.shape[0]
+                acc_per_rep = (pred == true[np.newaxis]).mean(axis=1) * 100
+                acc_mean    = acc_per_rep.mean(axis=0)
+                acc_sem     = acc_per_rep.std(axis=0) / np.sqrt(n_rep)
 
             ax.plot(angle_axis, acc_mean, color=color, linewidth=1.8, label=label)
             ax.fill_between(angle_axis, acc_mean - acc_sem, acc_mean + acc_sem,
@@ -1265,37 +1733,304 @@ class AveragedDecoder:
                    label=f'Chance ({chance:.0f}%)')
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
         ax.set(xlabel='Angle (°)', ylabel='Accuracy (%)', ylim=(0, 100))
-        ax.set_title('Distance accuracy by position', pad=25)
-        ax.legend(fontsize=12)
-
-        # Rows 1-2: confusion matrices (row=condition, col=range)
-        cm_keys = [['b0', 'b1', 'b2'], ['m0', 'm1', 'm2']]
-        for res, cond_label, keys in zip([bino_res, mono_res], cond_labels, cm_keys):
-            pred = res['pred_dist']   # (n_repeats, n_distances, n_positions)
-            true = res['true_dist']   # (n_distances, n_positions)
-
-            for col, ((lo, hi), color, cmap, key) in enumerate(
-                    zip(angle_ranges, range_colors, range_cmaps, keys)):
-                ax        = axes[key]
-                pos_mask  = (angle_axis >= lo) & (angle_axis < hi)
-                pred_flat = pred[:, :, pos_mask].ravel()
-                true_flat = np.tile(true[:, pos_mask][np.newaxis], (n_repeats, 1, 1)).ravel()
-
-                cm = confusion_matrix(true_flat, pred_flat,
-                                      labels=distances, normalize='true')
-                disp = ConfusionMatrixDisplay(cm, display_labels=[f'{d}' for d in distances])
-                disp.plot(ax=ax, colorbar=False, cmap=cmap)
-                for text in disp.text_.ravel():
-                    text.set_text(f'{float(text.get_text()):.1f}' if text.get_text() else '')
-
-                acc = (pred_flat == true_flat).mean() * 100
-                ax.set_title(f'{cond_label}  {lo}° to {hi}°\nacc={acc:.1f}%', color=color)
-                if col > 0:
-                    ax.set_ylabel('')
-
-        fig.suptitle(title, fontsize=22, y=0.95)
+        ax.set_title('Distance accuracy by position')
+        ax.legend()
+        if title:
+            fig.suptitle(title, fontsize=16)
         plt.tight_layout()
         return fig
+
+    def plot_distance_results_multi(self, bino_res_list, mono_res_list, title='', labels=None):
+        """Distance accuracy vs angle position averaged across animals.
+
+        Parameters
+        ----------
+        bino_res_list : list of dict   one cross_validate result per animal (binocular)
+        mono_res_list : list of dict   one cross_validate result per animal (monocular)
+        title         : str
+        labels        : tuple of str, optional
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        angle_ranges = [(-30, -20), (-20, 20), (20, 40)]
+        range_colors = ['firebrick', 'mediumpurple', 'steelblue']
+        cond_colors  = ['steelblue', 'coral']
+        cond_labels  = list(labels) if labels is not None else ['Binocular', 'Monocular']
+
+        angle_axis = bino_res_list[0]['angle_axis']
+        chance     = 100 / len(bino_res_list[0]['distances'])
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        for res_list, color, label in zip([bino_res_list, mono_res_list], cond_colors, cond_labels):
+            animal_means = []
+            for res in res_list:
+                if 'dist_acc_by_pos_all' in res:
+                    acc_mean = res['dist_acc_by_pos_all'].mean(axis=0) * 100
+                else:
+                    pred        = res['pred_dist']
+                    true        = res['true_dist']
+                    n_rep       = pred.shape[0]
+                    acc_per_rep = (pred == true[np.newaxis]).mean(axis=1) * 100
+                    acc_mean    = acc_per_rep.mean(axis=0)
+                # interpolate to common axis in case animals have different n_positions
+                acc_mean = np.interp(angle_axis, res['angle_axis'], acc_mean)
+                animal_means.append(acc_mean)
+
+            animal_means = np.stack(animal_means)   # (n_animals, n_positions)
+            mean = animal_means.mean(axis=0)
+            sem  = animal_means.std(axis=0) / np.sqrt(len(res_list))
+
+            ax.plot(angle_axis, mean, color=color, linewidth=2.5, label=label)
+            ax.fill_between(angle_axis, mean - sem, mean + sem, color=color, alpha=0.2)
+
+        ax.axhline(chance, color='gray', linestyle=':', linewidth=2.5,
+                   label=f'Chance ({chance:.0f}%)')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+        ax.set(xlabel='Angle (°)', ylabel='Accuracy (%)', ylim=(0, 100))
+        ax.set_title('Distance accuracy by position')
+        ax.legend()
+        if title:
+            fig.suptitle(title, fontsize=16)
+        plt.tight_layout()
+        return fig
+
+    def plot_confusion_central(self, bino_res_list, title=''):
+        """Confusion matrix for distance decoding (binocular), averaged across animals, -15° to 15° only.
+
+        Parameters
+        ----------
+        bino_res_list : list of dict   one cross_validate result per animal (binocular)
+        title         : str
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        distances   = bino_res_list[0]['distances']
+        dist_labels = [f'{d}' for d in distances]
+
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+        cms = []
+        for res in bino_res_list:
+            angle_axis = res['angle_axis']
+            zmask      = (angle_axis >= 0) & (angle_axis <= 10)
+            pred = res['pred_dist']   # (n_repeats, n_distances, n_positions)
+            true = res['true_dist']   # (n_distances, n_positions)
+            n_repeats = pred.shape[0]
+            d_pred = pred[:, :, zmask].ravel()
+            d_true = np.tile(true[:, zmask].ravel(), n_repeats)
+            cm = confusion_matrix(d_true, d_pred, labels=distances, normalize='true')
+            cms.append(cm)
+
+        cm_mean = np.mean(cms, axis=0)
+        acc     = np.mean([np.diag(c).mean() for c in cms]) * 100
+
+        # build a steelblue colormap
+        steel_cmap = mcolors.LinearSegmentedColormap.from_list(
+            'steelblue_cm', ['white', 'steelblue'])
+
+        im = ax.imshow(cm_mean, cmap=steel_cmap, vmin=0, vmax=cm_mean.max())
+        ax.set_xticks(range(len(distances)))
+        ax.set_xticklabels(dist_labels, fontsize=16, fontfamily='Arial')
+        ax.set_yticks(range(len(distances)))
+        ax.set_yticklabels(dist_labels, fontsize=16, fontfamily='Arial')
+        ax.set_xlabel('Predicted distance (cm)', fontsize=16, fontfamily='Arial')
+        ax.set_ylabel('True distance (cm)', fontsize=16, fontfamily='Arial')
+        ax.set_title(f'Binocular  ·  acc={acc:.1f}%  ·  [0°, 10°]', fontsize=20)
+        for i in range(len(distances)):
+            for j in range(len(distances)):
+                ax.text(j, i, f'{cm_mean[i, j]:.2f}',
+                        ha='center', va='center', fontsize=16,
+                        color='white' if cm_mean[i, j] > 0.5 else 'black',
+                        fontfamily='Arial')
+        plt.colorbar(im, ax=ax, shrink=0.8)
+
+        if title:
+            fig.suptitle(title, fontsize=20)
+        plt.tight_layout()
+        return fig
+
+    def plot_angle_results(self, bino_res, mono_res, title='', labels=None):
+        """Angle MAE vs angle position for binocular and monocular conditions.
+
+        Parameters
+        ----------
+        bino_res : dict  output of cross_validate or cross_validate_balanced (binocular)
+        mono_res : dict  output of cross_validate or cross_validate_balanced (monocular)
+        title    : str
+        labels   : tuple of str, optional
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        angle_ranges = [(-30, -20), (-20, 20), (20, 40)]
+        range_colors = ['firebrick', 'mediumpurple', 'steelblue']
+        cond_colors  = ['steelblue', 'firebrick']
+        cond_labels  = list(labels) if labels is not None else ['Binocular', 'Monocular']
+
+        angle_axis = bino_res['angle_axis']
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        for res, color, label in zip([bino_res, mono_res], cond_colors, cond_labels):
+            if 'angle_mae_by_pos_all' in res:
+                mae_all  = res['angle_mae_by_pos_all']
+                mae_mean = mae_all.mean(axis=0)
+                mae_sem  = mae_all.std(axis=0) / np.sqrt(len(mae_all))
+            else:
+                err      = np.abs(res['pred_angle'] - res['true_angle'])
+                mae_mean = err.mean(axis=0)
+                mae_sem  = err.std(axis=0) / np.sqrt(err.shape[0])
+
+            ax.plot(angle_axis, mae_mean, color=color, linewidth=1.8, label=label)
+            ax.fill_between(angle_axis, mae_mean - mae_sem, mae_mean + mae_sem,
+                            color=color, alpha=0.2)
+
+        for i, (lo, hi) in enumerate(angle_ranges):
+            ax.axvspan(lo, hi, color=range_colors[i], alpha=0.08, zorder=0)
+        ax.set(xlabel='Angle (°)', ylabel='MAE (°)')
+        ax.set_title('Angle MAE by position')
+        ax.legend()
+        if title:
+            fig.suptitle(title, fontsize=16)
+        plt.tight_layout()
+        return fig
+
+    def plot_mice_range_comparison(self, bino_results, mono_results, angle_ranges,
+                                    title='', range_labels=None):
+        """Distance accuracy bar plot across mice, grouped by angle range.
+
+        Parameters
+        ----------
+        bino_results  : list of result dicts (one per mouse), from cross_validate
+                        or cross_validate_balanced (binocular)
+        mono_results  : same for monocular
+        angle_ranges  : list of (lo, hi) tuples in degrees
+        title         : str
+        range_labels  : list of str or None  (defaults to 'lo°–hi°')
+
+        Returns
+        -------
+        fig, ax
+        """
+        def _range_acc(res, lo, hi):
+            angle_axis = res['angle_axis']
+            if 'dist_acc_by_pos_all' in res:
+                acc = res['dist_acc_by_pos_all'].mean(axis=0)
+            else:
+                acc = res['dist_acc_by_pos']
+            mask = (angle_axis >= lo) & (angle_axis < hi)
+            return acc[mask].mean() * 100
+
+        n_mice  = len(bino_results)
+        n_ranges = len(angle_ranges)
+
+        bino_accs = np.array([[_range_acc(r, lo, hi) for lo, hi in angle_ranges]
+                               for r in bino_results])  # (n_mice, n_ranges)
+        mono_accs = np.array([[_range_acc(r, lo, hi) for lo, hi in angle_ranges]
+                               for r in mono_results])
+
+        bino_mean = bino_accs.mean(axis=0)
+        bino_sem  = bino_accs.std(axis=0) / np.sqrt(n_mice)
+        mono_mean = mono_accs.mean(axis=0)
+        mono_sem  = mono_accs.std(axis=0) / np.sqrt(n_mice)
+
+        if range_labels is None:
+            range_labels = [f'{lo}°\u2013{hi}°' for lo, hi in angle_ranges]
+
+        x     = np.arange(n_ranges)
+        width = 0.35
+
+        fig, ax = plt.subplots(figsize=(max(5, n_ranges * 2.5), 4))
+
+        bar_kw = dict(width=width, edgecolor='black', linewidth=1.2, alpha=0.85)
+        err_kw = dict(fmt='none', color='black', capsize=3, linewidth=1.5)
+
+        ax.bar(x - width / 2, bino_mean, color='lightblue', label='Binocular', **bar_kw)
+        ax.errorbar(x - width / 2, bino_mean, yerr=bino_sem, **err_kw)
+        ax.bar(x + width / 2, mono_mean, color='coral', label='Monocular', **bar_kw)
+        ax.errorbar(x + width / 2, mono_mean, yerr=mono_sem, **err_kw)
+
+        ax.axhline(25, color='gray', ls=':', lw=1, label='Chance')
+        ax.set_xticks(x)
+        ax.set_xticklabels(range_labels)
+        ax.set(ylabel='Distance accuracy (%)', ylim=(0, 100), xlabel='Angle range')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.legend()
+        if title:
+            ax.set_title(title)
+        plt.tight_layout()
+        return fig, ax
+
+    def plot_accuracy_by_distance(self, results, title=''):
+        """Distance accuracy broken down by true distance level.
+
+        One bar per distance, colored by distance (matching SessionVisualizer style).
+        Accepts a single result dict or a list of dicts (one per mouse); when a list
+        is given, bars show the mean across mice and error bars show SEM.
+
+        Parameters
+        ----------
+        results : dict or list of dict   output of cross_validate
+        title   : str
+
+        Returns
+        -------
+        fig, ax
+        """
+        distance_colors = ['orange', '#35b779', '#31688e', '#440154']
+
+        if isinstance(results, dict):
+            results = [results]
+
+        distances = results[0]['distances']
+        n_dist    = len(distances)
+        x         = np.arange(n_dist)
+        bar_width = 0.5
+
+        def _acc_per_dist(res):
+            pred = res['pred_dist']   # (n_repeats, n_distances, n_positions)
+            true = res['true_dist']   # (n_distances, n_positions)
+            return np.array([
+                (pred[:, d, :] == true[d, :]).mean()
+                for d in range(n_dist)
+            ]) * 100
+
+        accs = np.array([_acc_per_dist(r) for r in results])  # (n_mice, n_dist)
+        mean = accs.mean(axis=0)
+        sem  = accs.std(axis=0) / np.sqrt(len(results))
+
+        fig, ax = plt.subplots(figsize=(max(5, n_dist * 1.5), 4))
+
+        dist_labels = [f'{int(d)} cm' for d in distances]
+        for k in range(n_dist):
+            ax.bar(x[k], mean[k], width=bar_width,
+                   color=distance_colors[k], edgecolor='black', linewidth=1.0,
+                   alpha=0.85, label=dist_labels[k])
+            ax.errorbar(x[k], mean[k], yerr=sem[k],
+                        fmt='none', color='black', capsize=2, linewidth=1.2)
+
+        ax.axhline(25, color='gray', ls=':', lw=1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(dist_labels)
+        ax.set(ylabel='Distance accuracy (%)', ylim=(0, 100), xlabel='Distance')
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+        ax.yaxis.grid(True, linestyle='--', alpha=0.4)
+        ax.set_axisbelow(True)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.legend(loc='upper right', framealpha=0.9, edgecolor='gray')
+        if title:
+            ax.set_title(title)
+        plt.tight_layout()
+        return fig, ax
 
     def plot_distance_comparison(self, bino_res, mono_res, title="", metric="accuracy",
                                   angle_ranges=None):

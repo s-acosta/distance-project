@@ -43,6 +43,11 @@ class CellAnalyzer:
         """
         self.device = device
 
+    def _get_available_conditions(self):
+        has_monocular = len(self.device.get_condition_trials(monocular=True)) > 0
+        has_binocular = len(self.device.get_condition_trials(monocular=False)) > 0
+        return has_monocular, has_binocular
+
     def compute_reliability(self, cell, distance=None, monocular=None, n_iterations=100):
         """
         Compute split-half reliability for a cell using correlation analysis.
@@ -342,6 +347,10 @@ class CellAnalyzer:
         float
             Ocular dominance index between -1 and 1
         """
+        has_monocular, has_binocular = self._get_available_conditions()
+        if not has_monocular or not has_binocular:
+            return None
+
         monocular_mean = self.device.get_all_traces(cell, distance=None, monocular=True, mean_trace=True)[0]
         binocular_mean = self.device.get_all_traces(cell, distance=None, monocular=False, mean_trace=True)[0]
 
@@ -387,6 +396,8 @@ class CellAnalyzer:
             - monocular : dict (reliability and modulation results)
             - binocular : dict (reliability and modulation results)
         """
+        has_monocular, has_binocular = self._get_available_conditions()
+
         rf = self.device.find_rf_position(cell, distance=None, monocular=None)
         ODI = self.analyze_ocular_dominance(cell)
 
@@ -396,14 +407,20 @@ class CellAnalyzer:
         results = {
             'cell_id': cell,
             'session_name': self.device.session_name,
-            'ODI': ODI.tolist(),
+            'ODI': ODI.tolist() if ODI is not None else None,
             'RF': rf.tolist(),
             'distance': all_distance.tolist(),
-            'monocular': {},
-            'binocular': {},
+            'monocular': None,
+            'binocular': None,
         }
 
-        for condition, monocular in [('monocular', True), ('binocular', False)]:
+        condition_map = []
+        if has_monocular:
+            condition_map.append(('monocular', True))
+        if has_binocular:
+            condition_map.append(('binocular', False))
+
+        for condition, monocular in condition_map:
 
             modulation_results = self.analyze_cell_modulation(cell, monocular=monocular)
             reliable_results = self.analyze_cell_reliability(cell, monocular=monocular, n_iterations=n_iterations)

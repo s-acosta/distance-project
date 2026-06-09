@@ -246,6 +246,59 @@ class WidefieldVisualizer:
 
         return fig, ax
 
+    def _draw_widefield_to_ax(self, ax, session_names=None, session_alpha=0.6):
+        """Draw widefield composite with area boundaries and sessions onto an existing axis."""
+
+        def transform_image(img, scale, rotation, dx, dy):
+            h, w = img.shape[:2]
+            center = (w / 2, h / 2)
+            M_rot = cv2.getRotationMatrix2D(center, rotation, scale)
+            M_rot[0, 2] += dx
+            M_rot[1, 2] += dy
+            return cv2.warpAffine(img, M_rot, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+        widefield = self.aligner_params['wf_maps']['img'].copy()
+        widefield_norm = (widefield - widefield.min()) / (widefield.max() - widefield.min())
+        composite = np.stack([widefield_norm, widefield_norm, widefield_norm], axis=2)
+
+        wf_transformations = self.aligner_params['wf_transformations']
+        if session_names is None:
+            session_names = list(wf_transformations.keys())
+
+        for session_name in session_names:
+            if session_name not in wf_transformations:
+                print(f"Warning: {session_name} not found in alignment parameters. Skipping.")
+                continue
+            params = wf_transformations[session_name]
+            session_dir = os.path.join(self.base_processed_dir, session_name)
+            ops_path = os.path.join(session_dir, 'suite2p', 'plane0', 'ops.npy')
+            try:
+                ops = np.load(ops_path, allow_pickle=True).item()
+                mean_img = ops['meanImg']
+            except FileNotFoundError:
+                print(f"Warning: Could not load mean image for {session_name}. Skipping.")
+                continue
+            mean_img_norm = (mean_img - mean_img.min()) / (mean_img.max() - mean_img.min())
+            mean_img_resized = cv2.resize(mean_img_norm, (widefield.shape[1], widefield.shape[0]),
+                                          interpolation=cv2.INTER_LINEAR)
+            transformed = transform_image(mean_img_resized, params['scale'], params['rotation'],
+                                          params['dx'], params['dy'])
+            session_green = np.zeros_like(composite)
+            session_green[:, :, 1] = transformed
+            mask = (transformed > 0).astype(float)
+            composite = composite * (1 - session_alpha * mask[:, :, None]) + session_green * session_alpha
+
+        ax.imshow(composite, extent=[0, 400, 400, 0], origin='upper')
+
+        areas_verts = self.aligner_params['areas_verts']
+        for i, (area_name, area_verts) in enumerate(areas_verts.items()):
+            patch = Polygon(area_verts, closed=True, facecolor='none',
+                            edgecolor='white', linewidth=5, label=area_name)
+            ax.add_patch(patch)
+
+        ax.set_title(f'{self.animal_id}', fontsize=13)
+        ax.axis('off')
+
     def plot_widefield_with_areas_and_sessions(self, session_names=None, session_alpha=0.6, save_path=None):
         """
         Plot widefield with both visual area boundaries and aligned sessions.
@@ -264,99 +317,10 @@ class WidefieldVisualizer:
         fig, ax
             Matplotlib figure and axis objects
         """
-
-        # Helper function to apply transformation
-        def transform_image(img, scale, rotation, dx, dy):
-            h, w = img.shape[:2]
-            center = (w / 2, h / 2)
-
-            M_rot = cv2.getRotationMatrix2D(center, rotation, scale)
-            M_rot[0, 2] += dx
-            M_rot[1, 2] += dy
-
-            transformed = cv2.warpAffine(
-                img, M_rot, (w, h),
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=0
-            )
-            return transformed
-
-        # Get widefield reference
-        widefield = self.aligner_params['wf_maps']['img'].copy()
-        widefield_norm = (widefield - widefield.min()) / (widefield.max() - widefield.min())
-
-        # Create composite image starting with widefield in grayscale
-        composite = np.stack([widefield_norm, widefield_norm, widefield_norm], axis=2)
-
-        # Determine which sessions to plot
-        wf_transformations = self.aligner_params['wf_transformations']
-        if session_names is None:
-            session_names = list(wf_transformations.keys())
-
-        # Overlay sessions in green
-        for session_name in session_names:
-            if session_name not in wf_transformations:
-                print(f"Warning: {session_name} not found in alignment parameters. Skipping.")
-                continue
-
-            params = wf_transformations[session_name]
-
-            # Load session mean image
-            session_dir = os.path.join(self.base_processed_dir, session_name)
-            ops_path = os.path.join(session_dir, 'suite2p', 'plane0', 'ops.npy')
-
-            try:
-                ops = np.load(ops_path, allow_pickle=True).item()
-                mean_img = ops['meanImg']
-            except FileNotFoundError:
-                print(f"Warning: Could not load mean image for {session_name}. Skipping.")
-                continue
-
-            # Normalize and resize
-            mean_img_norm = (mean_img - mean_img.min()) / (mean_img.max() - mean_img.min())
-            mean_img_resized = cv2.resize(mean_img_norm,
-                                        (widefield.shape[1], widefield.shape[0]),
-                                        interpolation=cv2.INTER_LINEAR)
-
-            # Transform
-            transformed = transform_image(
-                mean_img_resized,
-                params['scale'],
-                params['rotation'],
-                params['dx'],
-                params['dy']
-            )
-
-            # Blend using alpha compositing in green
-            session_green = np.zeros_like(composite)
-            session_green[:, :, 1] = transformed
-            mask = (transformed > 0).astype(float)
-            composite = composite * (1 - session_alpha * mask[:, :, None]) + session_green * session_alpha
-
-        # Create figure and display composite
         fig, ax = plt.subplots(figsize=(12, 12), dpi=100)
-        ax.imshow(composite, extent=[0, 400, 400, 0], origin='upper')
-
-        # Overlay visual area boundaries
-        areas_verts = self.aligner_params['areas_verts']
-        for i, (area_name, area_verts) in enumerate(areas_verts.items()):
-            color = f"C{i%10}"
-            patch = Polygon(area_verts, closed=True, facecolor='none',
-                          edgecolor=color, linewidth=3, label=area_name)
-            ax.add_patch(patch)
-
-        # Add legend
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        ax.legend(by_label.values(), by_label.keys(),
-                 loc='upper right', fontsize=10)
-
+        self._draw_widefield_to_ax(ax, session_names=session_names, session_alpha=session_alpha)
         ax.set_title(f'Widefield Map with Areas and Aligned Sessions\n{self.animal_id} - {self.experiment_name}',
-                    fontsize=14)
-        ax.set_xlabel('X (pixels)', fontsize=12)
-        ax.set_ylabel('Y (pixels)', fontsize=12)
-        ax.axis('off')
-
+                     fontsize=14)
         plt.tight_layout()
 
         if save_path is not None:
@@ -364,7 +328,6 @@ class WidefieldVisualizer:
             print(f"Figure saved to: {save_path}")
 
         plt.show()
-
         return fig, ax
 
     def plot_cells_in_widefield(self, session_df, session_name=None,

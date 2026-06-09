@@ -38,7 +38,6 @@ def setup_plot_style():
     colors = ['orange', '#35b779', '#31688e', '#440154', 'gray']
     return colors
 
-
 def import_vars_from_matlab(container, structure_name):
     """Extract all fields from a MATLAB structure and create variables.
 
@@ -75,4 +74,3 @@ def import_vars_from_matlab(container, structure_name):
                 locals_dict[field] = None
 
     return locals_dict
-

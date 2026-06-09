@@ -106,6 +106,8 @@ class RadialDevice:
     def _load_stimulus_variables(self):
 
         container = self._load_stimulus_container()
+
+        
         locals_dict = import_vars_from_matlab(container, 'distance_stim')
 
         self.distances_showed = locals_dict['distances']

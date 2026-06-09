@@ -23,7 +23,7 @@ from src.data.RadialDevice import RadialDevice
 from src.analysis.CellAnalysis import CellAnalyzer, SessionAnalyzer
 from src.analysis.SessionCombiner import SessionCombiner
 from src.viz.CellVisualizer import CellVisualizer
-from src.viz.SessionVisualizer import SessionVisualizer
+from src.viz.SessionVisualizer import SingleSessionVisualizer
 from src.data.WidefieldTransformer import WidefieldAligner, WidefieldMapper
 
 def load_dataframe(
@@ -92,7 +92,6 @@ def load_dataframe(
     print(f"[ok] Loaded DataFrame from {df_path} ({len(df)} cells)")
 
     return df
-
 
 def analyze_session(
     mouse_name: str,
@@ -170,7 +169,7 @@ def analyze_session(
 
     # Show plots if requested
     if show_plots:
-        visualizer = SessionVisualizer(device, session_df)
+        visualizer = SingleSessionVisualizer(session_df)
         visualizer.plot_modulation_bars()
         visualizer.plot_distance_bars()
         plt.show()
@@ -240,6 +239,68 @@ def combine_animal_sessions(
         combiner.save_combined_df(combined_df)
 
     return combined_df
+
+def combine_animals(
+    animal_names: list,
+    experiment_type: str,
+    base_data_dir: str = r'D:/data-distance-coding-project/processed-data',
+    base_multi_session_dir: str = r'D:/data-distance-coding-project/multi-session-data',
+    show_summary: bool = True
+) -> pd.DataFrame:
+    """
+    Combine all sessions across multiple animals into one DataFrame.
+
+    Calls combine_animal_sessions for each animal and concatenates the results,
+    adding an 'animal' column to track which animal each cell belongs to.
+
+    Parameters
+    ----------
+    animal_names : list of str
+        List of animal identifiers (e.g., ['SAM041', 'SAM042'])
+    experiment_type : str
+        Experiment type (e.g., 'tiling120um')
+    base_data_dir : str, optional
+        Base directory for processed data
+    base_multi_session_dir : str, optional
+        Base directory for multi-session combined data
+    show_summary : bool, optional
+        Whether to print per-animal and total summary (default: True)
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined DataFrame with all animals and an 'animal' column
+
+    Examples
+    --------
+    >>> all_df = combine_animals(['SAM041', 'SAM042'], 'tiling120um')
+    >>> print(all_df['animal'].value_counts())
+    """
+    all_dfs = []
+    for animal_name in animal_names:
+        if show_summary:
+            print(f"\n--- {animal_name} ---")
+        df = combine_animal_sessions(
+            animal_name=animal_name,
+            experiment_type=experiment_type,
+            base_data_dir=base_data_dir,
+            base_multi_session_dir=base_multi_session_dir,
+            show_summary=show_summary,
+            save_combined=False
+        )
+        df = df.copy()
+        df['animal'] = animal_name
+        all_dfs.append(df)
+
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+
+    if show_summary:
+        print(f"\n=== All animals combined ===")
+        print(combined_df['animal'].value_counts().to_string())
+        print(f"\nTotal cells: {len(combined_df)}")
+
+    return combined_df
+
 
 def align_to_widefield(
     animal_name: str,

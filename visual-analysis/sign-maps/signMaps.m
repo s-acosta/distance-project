@@ -3,8 +3,8 @@ load('snap.mat')
 load('maps.mat');
 % load('alt.mat')
 % load('azi.mat')
-reference = SAM043_ref;
-reference = imresize(reference, size(maps.VFS_processed));
+% reference = SAM043_ref;
+% reference = imresize(reference, size(maps.VFS_processed));
 maps.HorizontalRetinotopy = maps.HorizontalRetinotopy;
 %%
 field_of_view_vertical = maps.VerticalRetinotopy > -5 & maps.VerticalRetinotopy < 5;

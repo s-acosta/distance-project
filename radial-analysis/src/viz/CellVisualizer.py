@@ -237,23 +237,29 @@ class CellVisualizer:
         distances_with_control = [0, 1, 2, 3, 4]
         distances_without_control = [0, 1, 2, 3]
 
+        has_monocular, has_binocular = self.analyzer._get_available_conditions()
+
+        conditions = []
+        if has_monocular:
+            conditions.append({'monocular': True,  'title': 'monocular'})
+        if has_binocular:
+            conditions.append({'monocular': False, 'title': 'binocular'})
+
+        n_rows = len(conditions)
+
         # Create figure with a row for each condition, 5 columns per row (add one for stats text)
-        fig, axs = plt.subplots(2, 5, figsize=(22, 8),
-                               gridspec_kw={'width_ratios': [1, 1, 1, 1, 1.2]})
-        # remove axis ticks from second subplot
-        axs[0, 1].remove()
-        axs[1, 1].remove()
+        fig, axs = plt.subplots(n_rows, 5, figsize=(22, n_rows * 4),
+                               gridspec_kw={'width_ratios': [1, 1, 1, 1, 1.2]},
+                               squeeze=False)
+        # remove the placeholder axis for the polar subplot
+        for r in range(n_rows):
+            axs[r, 1].remove()
 
         # Adjust spacing between columns
         plt.subplots_adjust(wspace=0.4, hspace=0.3)
 
-        conditions = [
-            {'monocular': True,  'title': 'monocular'},
-            {'monocular': False, 'title': 'binocular'},
-        ]
-
         results = self.analyzer.analyze_cell_stats(cell)
-        reliable = results['monocular']['reliable'] or results['binocular']['reliable']
+        reliable = any(results[c['title']]['reliable'] for c in conditions)
 
         all_traces = self.device.get_all_traces(cell, distance=None, monocular=None, mean_trace=False)
         vmin, vmax = np.percentile(all_traces, [1, 99])

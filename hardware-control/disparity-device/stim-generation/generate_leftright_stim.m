@@ -79,7 +79,12 @@ baseRect  = [0 0 stim_size stim_size];
 total_frames = duration * frame_rate;
 
 % Output video
-video_path = fullfile(pwd, opts.output_name);
+[out_dir, ~, ~] = fileparts(opts.output_name);
+if out_dir == ""
+    video_path = fullfile(pwd, opts.output_name);   % bare filename -> current folder
+else
+    video_path = char(opts.output_name);            % caller passed a full path -> use as-is
+end
 vid = VideoWriter(video_path, 'MPEG-4');
 vid.FrameRate = frame_rate;
 vid.Quality = 95;

@@ -1,0 +1,202 @@
+import numpy as np
+import pandas as pd
+import os
+
+
+class CellAnalyzer:
+    """
+    Per-cell analysis for a disparity (left/right eye) session.
+
+    Computes split-half reliability per eye, eye-dominance (ODI), and the peak
+    receptive-field response. Requires a ``DisparityDevice`` for data access.
+
+    Examples
+    --------
+    >>> from src.data.DisparityDevice import DisparityDevice
+    >>> from src.analysis.CellAnalysis import CellAnalyzer
+    >>> D = DisparityDevice(mouse_name='SAM045', record_date='260609', experiment_name='goggles_left')
+    >>> analyzer = CellAnalyzer(D)
+    >>> analyzer.analyze_cell_reliability(cell=116, eye='left')
+    """
+
+    def __init__(self, device):
+        self.device = device
+
+    def compute_reliability(self, cell, eye=None, n_iterations=100, shift_window=None):
+        """
+        Split-half reliability of a cell's response for an eye condition.
+
+        Randomly splits the eye's trials in half, correlates the two mean
+        traces, and repeats ``n_iterations`` times. A circularly-shifted null is
+        computed in parallel. Trace lengths are truncated to the shortest trial.
+
+        Returns
+        -------
+        (corr, corr_shifted) : tuple of ndarray
+            Split-half correlations and shifted-null correlations.
+        """
+        idx = np.where(self.device.suite2p_id == cell)[0][0]
+        repeat_indices = self.device.get_eye_repeats(eye)
+
+        traces = [self.device.get_on_trace(idx, repeat).T for repeat in repeat_indices]
+        if len(traces) == 0:
+            return np.full(n_iterations, np.nan), np.full(n_iterations, np.nan)
+
+        min_len = min(t.shape[0] for t in traces)
+        all_traces = np.array([t[:min_len] for t in traces], dtype=float)
+
+        if all_traces.ndim != 2 or all_traces.shape[0] < 2:
+            return np.full(n_iterations, np.nan), np.full(n_iterations, np.nan)
+
+        n_repeats, n_time = all_traces.shape
+        n_halves = int(np.ceil(n_repeats / 2))
+        max_shift = n_time // 2 if shift_window is None else int(min(abs(shift_window), n_time))
+
+        corr = np.zeros(n_iterations, dtype=float)
+        corr_shifted = np.zeros(n_iterations, dtype=float)
+
+        def _safe_corr(a, b):
+            c = np.corrcoef(a, b)[0, 1]
+            return 0.0 if np.isnan(c) else c
+
+        time_idx = np.arange(n_time)
+
+        for i in range(n_iterations):
+            shuffled_idx = np.random.permutation(n_repeats)
+            first_idx = shuffled_idx[:n_halves]
+            second_idx = shuffled_idx[n_halves:]
+
+            first_mean = all_traces[first_idx].mean(axis=0)
+            second_mean = all_traces[second_idx].mean(axis=0)
+            corr[i] = _safe_corr(first_mean, second_mean)
+
+            shifts_first = np.random.randint(-max_shift, max_shift + 1, size=len(first_idx))
+            shifts_second = np.random.randint(-max_shift, max_shift + 1, size=len(second_idx))
+
+            first_shifted = all_traces[first_idx][
+                np.arange(len(first_idx))[:, None],
+                (time_idx - shifts_first[:, None]) % n_time,
+            ]
+            second_shifted = all_traces[second_idx][
+                np.arange(len(second_idx))[:, None],
+                (time_idx - shifts_second[:, None]) % n_time,
+            ]
+
+            corr_shifted[i] = _safe_corr(first_shifted.mean(axis=0), second_shifted.mean(axis=0))
+
+        return corr, corr_shifted
+
+    def analyze_cell_reliability(self, cell, eye, n_iterations=200, stimulus_percentile=99):
+        """
+        Whether a cell is reliably driven by the stimulus in one eye.
+
+        Reliable when the mean split-half correlation exceeds the
+        ``stimulus_percentile`` of the shifted-null distribution.
+
+        Returns
+        -------
+        dict
+            {'reliable': bool, 'mean_corr': float}
+        """
+        corr, corr_shifted = self.compute_reliability(
+            cell=cell, eye=eye, n_iterations=n_iterations
+        )
+
+        mean_corr = np.nanmean(corr)
+        reliable = mean_corr > np.nanpercentile(corr_shifted, stimulus_percentile)
+
+        return {
+            'reliable': bool(reliable),
+            'mean_corr': float(mean_corr),
+        }
+
+    def analyze_ocular_dominance(self, cell):
+        """
+        Ocular dominance index from the per-eye RF peak responses.
+
+        ODI = (|right| - |left|) / (|right| + |left|);  >0 right-eye preference,
+        <0 left-eye preference. Returns None for single-eye sessions.
+        """
+        if self.device.single_eye:
+            return None
+
+        _, right_val = self.device.find_rf_position(cell, eye='right')
+        _, left_val = self.device.find_rf_position(cell, eye='left')
+
+        denom = np.abs(right_val) + np.abs(left_val)
+        if denom == 0:
+            return None
+        return float((np.abs(right_val) - np.abs(left_val)) / denom)
+
+    def analyze_cell_stats(self, cell, n_iterations=200):
+        """
+        Reliability + RF summary for one cell.
+
+        For a single-eye session the columns are un-prefixed (``reliable``,
+        ``mean_corr``, ``rf``, ``rf_value``, ``px``). For a both-eye session the
+        columns are prefixed per eye (``right_*`` / ``left_*``) and an ``ODI`` is
+        included. ``px`` uses signed screen coordinates (left negative) only when
+        both eyes are present, matching the notebook.
+        """
+        cell = int(cell)
+        signed = not self.device.single_eye
+
+        row = {'cell': cell, 'session_name': self.device.session_name}
+
+        for eye in self.device.present_eyes:
+            rel = self.analyze_cell_reliability(cell, eye=eye, n_iterations=n_iterations)
+            rf_idx, rf_val = self.device.find_rf_position(cell, eye=eye)
+            px = self.device.get_screen_range(eye, signed=signed)[rf_idx]
+
+            prefix = '' if self.device.single_eye else f'{eye}_'
+            row[f'{prefix}reliable'] = rel['reliable']
+            row[f'{prefix}mean_corr'] = rel['mean_corr']
+            row[f'{prefix}rf'] = rf_idx
+            row[f'{prefix}rf_value'] = rf_val
+            row[f'{prefix}px'] = px
+
+        if not self.device.single_eye:
+            row['ODI'] = self.analyze_ocular_dominance(cell)
+
+        return row
+
+
+class SessionAnalyzer:
+    """
+    Aggregate per-cell stats across a whole disparity session.
+
+    Examples
+    --------
+    >>> from src.analysis.CellAnalysis import SessionAnalyzer
+    >>> session = SessionAnalyzer(D)
+    >>> df = session.analyze_session_stats()   # one row per cell
+    """
+
+    def __init__(self, device):
+        self.device = device
+        self.cell_analyzer = CellAnalyzer(device)
+
+    def analyze_session_stats(self, n_iterations=200):
+        """Run :meth:`CellAnalyzer.analyze_cell_stats` for every cell."""
+        rows = []
+        for cell in self.device.suite2p_id:
+            print(f'Analyzing cell {cell} of {self.device.suite2p_id[-1]}', end='\r', flush=True)
+            rows.append(self.cell_analyzer.analyze_cell_stats(int(cell), n_iterations=n_iterations))
+
+        return pd.DataFrame(rows)
+
+    def save_dataframe(self, df, save_path=None):
+        """Save a stats DataFrame next to the session data (.pkl or .csv)."""
+        if save_path is None:
+            save_path = f'{self.device.session_name}_dataframe.pkl'
+
+        full_save_path = os.path.join(self.device.data_dir, save_path)
+        os.makedirs(os.path.dirname(full_save_path), exist_ok=True)
+
+        if full_save_path.endswith('.csv'):
+            df.to_csv(full_save_path, index=False)
+        else:
+            df.to_pickle(full_save_path)
+
+        print(f'Saved DataFrame to: {full_save_path}')
+        return full_save_path

@@ -24,8 +24,8 @@ arguments
     opts.eye         (1,1) string  = "right"   % Which eye to stimulate: "right" or "left"
     opts.right_start (1,1) double  = 0          % Right eye start position (0=front)
     opts.right_end   (1,1) double  = 120        % Right eye end position
-    opts.left_start  (1,1) double  = 120        % Left eye start position
-    opts.left_end    (1,1) double  = 0          % Left eye end position (0=front)
+    opts.left_start  (1,1) double  = 160        % Left eye start position
+    opts.left_end    (1,1) double  = 40          % Left eye end position (0=front)
     opts.stim_size   (1,1) double  = 30         % Stimulus circle diameter (pixels)
     opts.PORT        (1,1) string  = "COM6"     % Right eye port
     opts.PORT_left   (1,1) string  = "COM5"     % Left eye port

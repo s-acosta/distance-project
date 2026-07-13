@@ -51,15 +51,18 @@ def _signed_angle_deg(rad):
     return ((-deg + 180) % 360) - 180
 
 
-def compute_ego_maps(df, settings, light_val):
+def compute_ego_maps(df, settings, light_val, return_occ=False, frame_mask=None):
     """Reconstruct per-cell normalized egocentric maps for one light/dark condition.
 
     ``ego_norm = ego_spk / ego_occ`` where ``ego_spk`` is the per-(ray, distance-bin)
     sum of ``spk_rate_thr`` and ``ego_occ`` the per-bin frame count, restricted to rows
-    where ``df['light'] == light_val``.
+    where ``df['light'] == light_val`` (and, if given, ``frame_mask`` -- a boolean mask over
+    df rows, e.g. to build the map from one half of the session).
 
     Returns an array of shape ``(n_cells, n_rays, n_dist)``; bins with zero occupancy are
-    ``np.nan``.
+    ``np.nan``. With ``return_occ=True`` returns ``(ego, occ)`` where ``occ`` is the per-bin
+    frame count of shape ``(n_rays, n_dist)`` (shared across cells -- it's the trajectory's
+    dwell, independent of which cell fired).
     """
     n_rays = 360 // settings["ego_rays_deg"]
     n_dist = round(settings["ego_radius"] / settings["ego_bin_size"])
@@ -68,6 +71,8 @@ def compute_ego_maps(df, settings, light_val):
     radius = settings["ego_radius"]
 
     sel = (df["light"] == light_val).to_numpy()
+    if frame_mask is not None:
+        sel = sel & np.asarray(frame_mask, dtype=bool)
     rd = np.stack(df["ray_distances"].values)[sel]  # (F, n_rays)
     sr = np.stack(
         [np.asarray(x, dtype=float) for x in df["spk_rate_thr"].values]
@@ -87,7 +92,8 @@ def compute_ego_maps(df, settings, light_val):
         spk[:, r, :] = tmp.T
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(occ > 0, spk / occ, np.nan)
+        ego = np.where(occ > 0, spk / occ, np.nan)
+    return (ego, occ) if return_occ else ego
 
 
 def preferred_from_map(ego, settings, clip_deg=120, window_deg=5):

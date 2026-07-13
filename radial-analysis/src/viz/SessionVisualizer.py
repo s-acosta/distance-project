@@ -13,6 +13,8 @@ from scipy.stats import binned_statistic_2d, pearsonr, mannwhitneyu, fisher_exac
 from itertools import combinations
 from src.viz.CellVisualizer import CellVisualizer
 from matplotlib.patches import Polygon
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.collections import LineCollection
 
 
 class SessionVisualizerBase():
@@ -46,6 +48,13 @@ class SessionVisualizerBase():
         self.base_data_dir = base_data_dir
 
         self.distance_colors = setup_plot_style()
+        # continuous colormap through the discrete distance palette (near -> far),
+        # so binned mean-distance maps match the distance bar/scatter colors
+        self.distance_cmap = LinearSegmentedColormap.from_list(
+            'distance', self.distance_colors[:4])
+        # pctg maps: 'Blues' (white at 0 -> blue). Coverage outline (pctg only)
+        # disambiguates a real 0% bin from one with too few cells.
+        self.pctg_cmap = plt.get_cmap('Blues')
         self.modulation_colors = {
             'monocular': 'coral',
             'binocular': 'lightblue',
@@ -90,7 +99,7 @@ class SessionVisualizerBase():
         """Apply mode-specific axis adjustments after plotting. Default: no-op."""
         pass
 
-    def _overlay_area_boundaries(self, ax, show_legend=True):
+    def _overlay_area_boundaries(self, ax, show_legend=True, lw=1.0):
         """Overlay visual area boundaries on a plot. Default: no-op."""
         pass
 
@@ -217,9 +226,18 @@ class SessionVisualizerBase():
                 mask &= reliable_df['binocular'].apply(lambda x: x['bootstrap_pvalue']) > 0.05
             output_df = reliable_df[mask]
 
+        elif modulation_type == 'modulated':
+            # any modulation: monocular OR binocular significant (complement of 'none')
+            mask = pd.Series(False, index=reliable_df.index)
+            if has_monocular:
+                mask |= reliable_df['monocular'].apply(lambda x: x['bootstrap_pvalue']) < 0.05
+            if has_binocular:
+                mask |= reliable_df['binocular'].apply(lambda x: x['bootstrap_pvalue']) < 0.05
+            output_df = reliable_df[mask]
+
         else:
             raise ValueError(f"Unknown modulation_type '{modulation_type}'. "
-                             f"Must be one of: 'monocular', 'binocular', 'both', 'none'.")
+                             f"Must be one of: 'monocular', 'binocular', 'both', 'none', 'modulated'.")
 
         return output_df
 
@@ -1140,23 +1158,42 @@ class SessionVisualizerBase():
 
     def plot_cell_density(self, condition='reliable', feature='RF',
                           n_bins=20, min_count=1,
-                          ax=None, show_areas=True, cmap='viridis'):
+                          ax=None, show_areas=True, cmap='viridis',
+                          vmin=None, vmax=None, outline_coverage=True, figure_grade=False,
+                          min_count_boundary=None, boundary_lw=1.5, area_lw=1.0):
         """
         Plot 2D density of a feature across cortex by binning cells and
         coloring each bin by the mean feature value.
+
+        vmin / vmax override the per-feature default color limits when provided
+        (e.g. vmax=30 for a binocular pctg map). Leave as None to use the
+        feature defaults.
+
+        outline_coverage draws a solid gray outline along the bin edges of the
+        population-denominator coverage (the cells the pctg map uses as its
+        denominator: all cells for 'reliable', else the reliable cells). It applies
+        to every feature, so a mean map (e.g. binocular distance) is bounded by the
+        coverage of that population -- a sparse bin inside reads as a real gap rather
+        than "not enough cells". min_count_boundary sets that denominator threshold for
+        the outline independently of min_count (which fills bins); defaults to min_count.
+
+        figure_grade drops the gray widefield background (white instead) and renders
+        under-min_count bins white, matching the mini2p figure-grade density panels.
         """
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 10))
         else:
             fig = ax.get_figure()
 
-        bg_img = self._get_background_image()
-        bg_vmin = np.percentile(bg_img, 1)
-        bg_vmax = np.percentile(bg_img, 99)
         extent = self._get_background_extent()
-
-        ax.imshow(bg_img, alpha=0.5, cmap='gray', vmin=bg_vmin, vmax=bg_vmax,
-                  extent=extent, origin='upper')
+        if figure_grade:
+            ax.set_facecolor('white')                          # figure-grade: white background
+        else:
+            bg_img = self._get_background_image()
+            bg_vmin = np.percentile(bg_img, 1)
+            bg_vmax = np.percentile(bg_img, 99)
+            ax.imshow(bg_img, alpha=0.5, cmap='gray', vmin=bg_vmin, vmax=bg_vmax,
+                      extent=extent, origin='upper')
 
         reliable_df = self.filter_by_reliability(self.session_df, reliable_type='reliable', threshold=0.85)
         if condition == 'reliable':
@@ -1172,6 +1209,14 @@ class SessionVisualizerBase():
         y_min, y_max = sorted([extent[2], extent[3]])
         x_edges = np.linspace(x_min, x_max, n_bins + 1)
         y_edges = np.linspace(y_min, y_max, n_bins + 1)
+
+        # population denominator for this condition (all cells for 'reliable', else the reliable
+        # cells) -- the same denominator the pctg map uses; its coverage defines the outline.
+        denom_df = self.session_df if condition == 'reliable' else reliable_df
+        ddx, ddy = self._get_cell_coordinates(denom_df)
+        denom_count, _, _ = np.histogram2d(np.asarray(ddx, dtype=float),
+                                           np.asarray(ddy, dtype=float),
+                                           bins=[x_edges, y_edges])
 
         if feature == 'pctg':
             cond_x, cond_y = self._get_cell_coordinates(cells_df)
@@ -1212,30 +1257,65 @@ class SessionVisualizerBase():
 
         mean_grid = np.ma.masked_where((count_grid < min_count) | np.isnan(mean_grid), mean_grid)
 
+        vmin_user, vmax_user = vmin, vmax
         if feature == 'distance':
             vmin, vmax = 0.5, 2.5
-            cmap = 'viridis_r'
+            cmap = self.distance_cmap
         elif feature == 'RF':
             vmin, vmax = -30, 60
         elif feature == 'pctg':
             vmin = 0
-            vmax = 50 if condition in ('binocular', 'monocular') else 100
-            cmap = {'reliable': 'Greens', 'binocular': 'Blues', 'monocular': 'Reds'}.get(condition, cmap)
+            vmax = {'binocular': 30, 'monocular': 50}.get(condition, 100)
+            cmap = self.pctg_cmap
         else:
             vmin, vmax = np.nanmin(mean_grid), np.nanmax(mean_grid)
+        # explicit overrides win over the per-feature defaults
+        if vmin_user is not None:
+            vmin = vmin_user
+        if vmax_user is not None:
+            vmax = vmax_user
 
+        if figure_grade:                                       # under-min_count bins render white
+            cmap = (plt.get_cmap(cmap) if isinstance(cmap, str) else cmap).copy()
+            cmap.set_bad('white')
         mesh = ax.pcolormesh(
             x_edges, y_edges, mean_grid.T,
             cmap=cmap, vmin=vmin, vmax=vmax,
             shading='flat', alpha=0.85, edgecolors='none',
         )
 
+        if outline_coverage:
+            # gray staircase along bin edges of the population-denominator coverage (the cells the
+            # pctg map uses as its denominator), so a mean map (e.g. binocular distance) is outlined
+            # by that population's coverage. min_count_boundary thresholds the denominator (reliable)
+            # count independently of the fill's min_count; falls back to min_count when not given.
+            boundary_min = min_count if min_count_boundary is None else min_count_boundary
+            covered = denom_count >= boundary_min
+            nx, ny = covered.shape
+            segments = []
+            for i in range(nx):
+                for j in range(ny):
+                    if not covered[i, j]:
+                        continue
+                    x0, x1 = x_edges[i], x_edges[i + 1]
+                    y0, y1 = y_edges[j], y_edges[j + 1]
+                    if i == 0 or not covered[i - 1, j]:
+                        segments.append([(x0, y0), (x0, y1)])
+                    if i == nx - 1 or not covered[i + 1, j]:
+                        segments.append([(x1, y0), (x1, y1)])
+                    if j == 0 or not covered[i, j - 1]:
+                        segments.append([(x0, y0), (x1, y0)])
+                    if j == ny - 1 or not covered[i, j + 1]:
+                        segments.append([(x0, y1), (x1, y1)])
+            if segments:
+                ax.add_collection(LineCollection(segments, colors='gray', linewidths=boundary_lw))
+
         cbar_label = f'% {condition}' if feature == 'pctg' else feature.capitalize()
         cbar = fig.colorbar(mesh, ax=ax, shrink=0.6, pad=0.02)
         cbar.set_label(cbar_label, fontsize=14)
 
         if show_areas:
-            self._overlay_area_boundaries(ax)
+            self._overlay_area_boundaries(ax, lw=area_lw)
 
         self._apply_axis_adjustments(ax)
 
@@ -1804,7 +1884,7 @@ class MultiSessionVisualizer(SessionVisualizerBase):
         else:
             return f"{', '.join(mouse_names)} ({n_sessions} sessions)"
 
-    def _overlay_area_boundaries(self, ax, show_legend=True, color='black'):
+    def _overlay_area_boundaries(self, ax, show_legend=True, color='black', lw=1.0):
         """Overlay visual area boundaries on a plot.
 
         Parameters
@@ -1829,7 +1909,7 @@ class MultiSessionVisualizer(SessionVisualizerBase):
 
         for i, (area_name, area_verts) in enumerate(sorted_areas):
             patch = Polygon(area_verts, closed=True, facecolor='none',
-                           edgecolor=color, linewidth=3, label=area_name, alpha=0.8)
+                           edgecolor=color, linewidth=lw, label=area_name, alpha=0.8)
             ax.add_patch(patch)
 
         # if show_legend:
@@ -2977,17 +3057,350 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
         and the standard session DataFrame columns (RF, monocular, binocular, etc.).
     """
 
-    def __init__(self, all_df, base_data_dir=r'D:\data-distance-coding-project\processed-data'):
+    def __init__(self, all_df,
+                 base_data_dir=r'D:\data-distance-coding-project\processed-data',
+                 base_multi_dir=r'D:\data-distance-coding-project\multi-session-data'):
         super().__init__(all_df, base_data_dir=base_data_dir)
+        self.base_multi_dir = base_multi_dir
+        # cross-animal alignment state — populated by align_animals()
+        self._aligned = False
+        self._reference_animal = None
+        self._reference_img = None        # (400,400) reference VFS
+        self._reference_areas = {}        # area_name -> verts, in the reference frame
+        self._animal_transforms = {}      # animal -> dict(M, dx, dy, rotation_deg, scale_factor, pearson_r)
+        self._aligned_vfs = {}            # animal -> (400,400) warped VFS, for QC
+        self._ref_extent = None           # centered [xmin, xmax, ymax, ymin] view over pooled cells
+
+    # -------------------------------------------------------------------------
+    # Cross-animal fusion + pooled (common-reference-frame) plotting
+    #
+    # align_animals() fits a VFS->reference affine per animal (same approach as
+    # the sign-mapping composite pipeline) and writes transformed 'ref_coords'
+    # into the pooled df.  Implementing the three hooks below then makes every
+    # inherited map-based plot (plot_cell_density, plot_rf_density_map,
+    # plot_reliable_cells_map, plot_modulated_cells_map, plot_location_map)
+    # operate in the shared frame, exactly like MultiSessionVisualizer.
+    # -------------------------------------------------------------------------
 
     def _get_background_image(self):
-        return None
+        # Pooled across animals — the per-animal widefield image is not meaningful,
+        # so the background is a blank WHITE canvas. Returned as RGB so imshow draws
+        # it literally white (a uniform 2-D array maps to mid-grey under vmin==vmax).
+        # The view is centered on the area boundaries via _get_background_extent().
+        self._require_aligned()
+        return np.ones((10, 10, 3), dtype=float)
 
     def _get_background_extent(self):
-        return None
+        self._require_aligned()
+        return self._ref_extent
 
     def _get_cell_coordinates(self, input_df):
-        return None, None
+        """Cells -> reference-frame (x, y), computed from each animal's affine.
+
+        Transforms 'wf_coords' on the fly using the per-animal transform, so it
+        works for any dataframe — including the reliable_classes / modulated_classes
+        snapshots that the base class caches at __init__, i.e. before align_animals
+        has added 'ref_coords'.
+        """
+        self._require_aligned()
+        n = len(input_df)
+        xs = np.full(n, np.nan)
+        ys = np.full(n, np.nan)
+        animals = input_df['animal'].values
+        wf = input_df['wf_coords'].values
+        for i, (animal, c) in enumerate(zip(animals, wf)):
+            t = self._animal_transforms.get(animal)
+            if t is None:
+                continue
+            try:
+                x0, y0 = float(c[0]), float(c[1])
+            except (TypeError, IndexError, ValueError):
+                continue
+            M = t['M']
+            xs[i] = M[0, 0] * x0 + M[0, 1] * y0 + M[0, 2]
+            ys[i] = M[1, 0] * x0 + M[1, 1] * y0 + M[1, 2]
+        return xs, ys
+
+    def _require_aligned(self):
+        if not getattr(self, '_aligned', False):
+            raise RuntimeError(
+                "Animals not aligned yet. Call align_animals(experiment_type=...) "
+                "before using map-based / pooled plots."
+            )
+
+    def _overlay_area_boundaries(self, ax, show_legend=True, color='black', lw=1.0):
+        self._require_aligned()
+        order = ['V1', 'LM', 'RL', 'AM', 'PM', 'AL', 'None']
+        for name, verts in sorted(
+            self._reference_areas.items(),
+            key=lambda kv: order.index(kv[0]) if kv[0] in order else len(order),
+        ):
+            ax.add_patch(Polygon(verts, closed=True, facecolor='none',
+                                 edgecolor=color, linewidth=lw, label=name, alpha=0.8))
+
+    # --- alignment primitives (local copy of the sign-mapping approach) -------
+
+    @staticmethod
+    def _prep_vfs(img, sigma):
+        from scipy.ndimage import gaussian_filter
+        img = np.nan_to_num(np.asarray(img, dtype=np.float32))
+        if img.ndim > 2:
+            img = img.mean(axis=0)
+        if sigma and sigma > 0:
+            img = gaussian_filter(img, sigma=sigma)
+        img = img - img.mean()
+        s = img.std()
+        return img / s if s > 0 else img
+
+    @staticmethod
+    def _affine(center, rot, scale, dx=0.0, dy=0.0):
+        import cv2
+        M = cv2.getRotationMatrix2D(center, float(rot), float(scale))
+        M[0, 2] += dx
+        M[1, 2] += dy
+        return M
+
+    @staticmethod
+    def _warp_img(img, M, out_shape):
+        import cv2
+        h, w = out_shape
+        return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+    @staticmethod
+    def _best_shift(ref_norm, moving_norm, max_translation):
+        import cv2
+        pad = int(max_translation)
+        ref_pad = cv2.copyMakeBorder(ref_norm, pad, pad, pad, pad,
+                                     cv2.BORDER_CONSTANT, value=0)
+        res = cv2.matchTemplate(ref_pad, moving_norm, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        return max_loc[0] - pad, max_loc[1] - pad, max_val
+
+    def align_animals(self, experiment_type, reference=None, vfs_sigma=2.0,
+                      rotation_degs=None, scale_factors=None,
+                      max_translation=120, verbose=True):
+        """Fit a VFS->reference affine per animal and pool all cells into one frame.
+
+        Loads each animal's ``wf_maps['VFS']`` (400x400), aligns it to the
+        reference animal's VFS by a brute-force rotation x scale x translation
+        search, and applies that same affine to the animal's ``wf_coords`` ->
+        new ``ref_coords`` column on ``self.session_df``.
+
+        Parameters
+        ----------
+        experiment_type : str
+            Experiment name used to load each animal's widefield data
+            (e.g. 'tiling_120um'), same value passed to MultiSessionVisualizer.
+        reference : str or None
+            Animal id whose VFS defines the common frame. Defaults to the first
+            animal alphabetically. Every other animal is aligned to it.
+        vfs_sigma : float
+            Gaussian sigma used to normalise both VFS maps before matching.
+        rotation_degs, scale_factors : array-like or None
+            Search ranges. Default rotation +/-15 deg (1 deg step),
+            scale 0.8-1.2 (0.05 step).
+        max_translation : int
+            Max pixel shift searched by template matching.
+
+        Returns
+        -------
+        dict
+            animal -> transform dict (M, dx, dy, rotation_deg, scale_factor, pearson_r).
+        """
+        import cv2
+        if rotation_degs is None:
+            rotation_degs = np.arange(-15, 15.1, 1.0)
+        if scale_factors is None:
+            scale_factors = np.arange(0.8, 1.21, 0.05)
+
+        animals = sorted(self.session_df['animal'].dropna().unique())
+        if not animals:
+            raise ValueError("No animals in session_df.")
+
+        # load each animal's VFS + area verts via a per-animal MultiSessionVisualizer
+        vfs, areas, subdf = {}, {}, {}
+        for animal in animals:
+            adf = self.session_df[self.session_df['animal'] == animal].copy()
+            try:
+                msv = MultiSessionVisualizer(
+                    adf, mouse_name=animal, experiment_name=experiment_type,
+                    base_data_dir=self.base_data_dir, base_multi_dir=self.base_multi_dir)
+            except Exception as e:
+                if verbose:
+                    print(f"  [skip] {animal}: could not load widefield data ({e})")
+                continue
+            v = np.nan_to_num(np.asarray(msv._widefield_data['wf_maps']['VFS'], np.float32))
+            if v.shape[:2] != (400, 400):
+                v = cv2.resize(v, (400, 400))
+            vfs[animal] = v
+            areas[animal] = msv._widefield_data.get('areas_verts', {})
+            subdf[animal] = adf
+
+        valid = list(vfs.keys())
+        if not valid:
+            raise RuntimeError("No animals had loadable widefield VFS maps.")
+
+        if reference is None:
+            reference = valid[0]
+        if reference not in vfs:
+            raise ValueError(f"Reference '{reference}' not loadable. Options: {valid}")
+
+        self._reference_animal = reference
+        self._reference_img = vfs[reference]
+        self._reference_areas = areas.get(reference, {})
+        ref_shape = self._reference_img.shape[:2]            # (400, 400)
+        h, w = ref_shape
+        center = (w / 2.0, h / 2.0)
+        ref_norm = self._prep_vfs(self._reference_img, vfs_sigma)
+
+        self._animal_transforms, self._aligned_vfs = {}, {}
+        ref_coord_map = {}                                   # df index -> [x, y]
+
+        def _xy(c):
+            try:
+                return float(c[0]), float(c[1])
+            except (TypeError, IndexError, ValueError):
+                return np.nan, np.nan
+
+        for animal in valid:
+            adf = subdf[animal]
+            if animal == reference:
+                M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+                best = dict(dx=0.0, dy=0.0, rotation_deg=0.0, scale_factor=1.0, pearson_r=1.0)
+            else:
+                mov_norm = self._prep_vfs(vfs[animal], vfs_sigma)
+                best_corr, best_params = -np.inf, None
+                for rot in rotation_degs:
+                    for sc in scale_factors:
+                        moving = self._warp_img(mov_norm, self._affine(center, rot, sc), ref_shape)
+                        dx, dy, corr = self._best_shift(ref_norm, moving, max_translation)
+                        if corr > best_corr:
+                            best_corr, best_params = corr, (dx, dy, float(rot), float(sc))
+                dx, dy, rot, sc = best_params
+                M = self._affine(center, rot, sc, dx, dy)
+                best = dict(dx=float(dx), dy=float(dy), rotation_deg=rot,
+                            scale_factor=sc, pearson_r=float(best_corr))
+
+            best['M'] = M
+            self._animal_transforms[animal] = best
+            self._aligned_vfs[animal] = self._warp_img(vfs[animal], M, ref_shape)
+
+            # forward-transform this animal's cells into the reference frame
+            xy = np.array([_xy(c) for c in adf['wf_coords'].values], dtype=np.float64)
+            ref_xy = np.hstack([xy, np.ones((len(xy), 1))]) @ M.T   # N x 2
+            for idx, (rx, ry) in zip(adf.index, ref_xy):
+                ref_coord_map[idx] = [float(rx), float(ry)]
+
+            if verbose:
+                tag = " (reference)" if animal == reference else ""
+                print(f"  {animal}{tag}: rot={best['rotation_deg']:.1f} "
+                      f"scale={best['scale_factor']:.2f} dx={best['dx']:.0f} "
+                      f"dy={best['dy']:.0f} r={best['pearson_r']:.3f} n_cells={len(adf)}")
+
+        self.session_df['ref_coords'] = self.session_df.index.map(
+            lambda i: ref_coord_map.get(i, [np.nan, np.nan]))
+
+        # centered view: square bounding box of the area boundaries (+10% padding).
+        # Boundaries (not cells) define the anatomical frame, so the view is stable
+        # across conditions. origin='upper' extent form [xmin, xmax, ymax, ymin].
+        verts = []
+        for v in (self._reference_areas or {}).values():
+            arr = np.asarray(v, dtype=float)
+            if arr.ndim == 2 and arr.shape[1] == 2 and len(arr):
+                verts.append(arr)
+        if verts:
+            allv = np.vstack(verts)
+            xmin, ymin = np.nanmin(allv, axis=0)
+            xmax, ymax = np.nanmax(allv, axis=0)
+            cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+            half = 0.5 * max(xmax - xmin, ymax - ymin, 1.0) * 1.10
+            self._ref_extent = [cx - half, cx + half, cy + half, cy - half]
+        else:
+            self._ref_extent = [0, 400, 400, 0]
+
+        self._aligned = True
+        if verbose:
+            print(f"\nAligned {len(self._animal_transforms)} animals to '{reference}'.")
+        return self._animal_transforms
+
+    # --- fusion QC plots ------------------------------------------------------
+
+    def plot_alignment(self, cmap='jet'):
+        """Reference areas overlaid on each animal's aligned VFS (+ pearson r)."""
+        self._require_aligned()
+        animals = list(self._aligned_vfs.keys())
+        n = len(animals) + 1
+        ncols = min(5, n)
+        nrows = int(np.ceil(n / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+        axes = np.atleast_1d(axes).ravel()
+        a = 1.0 / len(animals)
+        for animal in animals:
+            axes[0].imshow(self._aligned_vfs[animal], cmap=cmap, alpha=a,
+                           extent=[0, 400, 400, 0], origin='upper')
+        axes[0].set_title(f"All aligned VFS (n={len(animals)})")
+        axes[0].axis('off')
+        for i, animal in enumerate(animals, start=1):
+            axes[i].imshow(self._aligned_vfs[animal], cmap=cmap,
+                           extent=[0, 400, 400, 0], origin='upper')
+            self._overlay_area_boundaries(axes[i])
+            r = self._animal_transforms[animal]['pearson_r']
+            axes[i].set_title(f"{animal}  r={r:.2f}")
+            axes[i].axis('off')
+        for ax in axes[n:]:
+            ax.axis('off')
+        plt.tight_layout()
+        return fig, axes
+
+    def plot_mean_vfs(self, cmap='jet', show_areas=True):
+        """Mean composite VFS across aligned animals — sharp borders = good fusion."""
+        self._require_aligned()
+        mean_vfs = np.nanmean(np.stack(list(self._aligned_vfs.values())), axis=0)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.imshow(mean_vfs, cmap=cmap, extent=[0, 400, 400, 0], origin='upper')
+        if show_areas:
+            self._overlay_area_boundaries(ax)
+        ax.set_title(f"Mean composite VFS (n={len(self._aligned_vfs)})")
+        ax.axis('off')
+        return fig, ax, mean_vfs
+
+    def plot_pooled_cells(self, condition='reliable', s=4, alpha=0.5, ax=None, show_areas=True):
+        """Pooled cells in the reference frame, colored by animal — checks coverage/overlap."""
+        self._require_aligned()
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 8))
+        else:
+            fig = ax.get_figure()
+        rel = self.filter_by_reliability(self.session_df, 'reliable', 0.85)
+        df = rel if condition == 'reliable' else self.filter_by_modulation(rel, condition)
+        cmap = plt.get_cmap('tab20')
+        for i, animal in enumerate(sorted(df['animal'].dropna().unique())):
+            x, y = self._get_cell_coordinates(df[df['animal'] == animal])
+            ax.scatter(x, y, s=s, alpha=alpha, color=cmap(i % 20),
+                       label=animal, edgecolors='none')
+        if show_areas:
+            self._overlay_area_boundaries(ax)
+        ax.legend(markerscale=3, fontsize=8, loc='upper right')
+        ext = self._ref_extent
+        ax.set_xlim(ext[0], ext[1])
+        ax.set_ylim(ext[2], ext[3])
+        ax.set_aspect('equal')
+        ax.axis('off')
+        ax.set_title(f"Pooled {condition} cells (n_animals={df['animal'].nunique()})")
+        return fig, ax
+
+    # --- pooled density/features (base versions are shadowed by the per-animal ones) ---
+
+    def plot_cell_density_pooled(self, *args, **kwargs):
+        """All cells pooled into the reference frame (base plot_cell_density)."""
+        self._require_aligned()
+        return SessionVisualizerBase.plot_cell_density(self, *args, **kwargs)
+
+    def plot_cell_features_pooled(self, *args, **kwargs):
+        """All cells pooled into the reference frame (base plot_cell_features)."""
+        self._require_aligned()
+        return SessionVisualizerBase.plot_cell_features(self, *args, **kwargs)
 
     def _get_session_title(self):
         if 'animal' in self.session_df.columns:
@@ -3060,7 +3473,9 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
 
     def plot_cell_density(self, experiment_type, condition='reliable', feature='RF',
                           n_bins=20, min_count=1,
-                          show_areas=True, cmap='viridis'):
+                          show_areas=True, cmap='viridis',
+                          outline_coverage=True, figure_grade=False, min_count_boundary=None,
+                          boundary_lw=1.5, area_lw=1.0):
         """
         Plot 2D density of a feature on the widefield map for each animal as a subplot.
         """
@@ -3077,7 +3492,10 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
                 viz = MultiSessionVisualizer(animal_df, mouse_name=animal, experiment_name=experiment_type)
                 viz.plot_cell_density(condition=condition, feature=feature,
                                       n_bins=n_bins, min_count=min_count,
-                                      ax=ax, show_areas=show_areas, cmap=cmap)
+                                      ax=ax, show_areas=show_areas, cmap=cmap,
+                                      outline_coverage=outline_coverage, figure_grade=figure_grade,
+                                      min_count_boundary=min_count_boundary, boundary_lw=boundary_lw,
+                                      area_lw=area_lw)
                 ax.set_title(animal, fontsize=13)
             except Exception as e:
                 ax.text(0.5, 0.5, str(e), ha='center', va='center', transform=ax.transAxes,
@@ -3545,7 +3963,7 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
         plt.tight_layout()
         return fig
 
-    def plot_modulation_bars(self, group_by=None, min_cells=50):
+    def plot_modulation_bars(self, group_by=None, min_cells=50, show_animals=True):
         """
         Bar plot of % modulated cells per group, with SEM error bars and per-animal scatter dots.
 
@@ -3558,6 +3976,9 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
             'area', 'session', or None (all cells together).
         min_cells : int
             Minimum number of reliable cells an animal must have in a group to be included (default: 10).
+        show_animals : bool
+            If True (default), overlay per-animal scatter dots and show an animal legend.
+            If False, hide the dots and show the category (modulation type) legend instead.
 
         Returns
         -------
@@ -3608,7 +4029,7 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
         marker_map = {a: animal_markers[k % len(animal_markers)] for k, a in enumerate(animals)}
 
         rng = np.random.default_rng(42)
-        fig, ax = plt.subplots(figsize=(max(8, n_groups * 2), 7))
+        fig, ax = plt.subplots(figsize=(max(11, n_groups * 2), 6))
 
         for j, mod_type in enumerate(modulation_types):
             offset = (j - n_mod / 2 + 0.5) * (bar_width + bar_gap)
@@ -3626,13 +4047,14 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
                        label=mod_type.capitalize() if i == 0 else '')
                 ax.errorbar(x[i] + offset, mean, yerr=sem,
                             fmt='none', color='black', capsize=4, linewidth=1.5)
-                for animal, val in zip(animals, vals):
-                    if not np.isnan(val):
-                        marker = marker_map[animal]
-                        jitter = rng.uniform(-bar_width * 0.3, bar_width * 0.3)
-                        ax.scatter(x[i] + offset + jitter, val, marker=marker, color='#888888',
-                                   s=50, zorder=5, alpha=0.6, edgecolors='white', linewidths=0.5,
-                                   label=animal if (i == 0 and j == 0) else '')
+                if show_animals:
+                    for animal, val in zip(animals, vals):
+                        if not np.isnan(val):
+                            marker = marker_map[animal]
+                            jitter = rng.uniform(-bar_width * 0.3, bar_width * 0.3)
+                            ax.scatter(x[i] + offset + jitter, val, marker=marker, color='#888888',
+                                       s=50, zorder=5, alpha=0.6, edgecolors='white', linewidths=0.5,
+                                       label=animal if (i == 0 and j == 0) else '')
 
         ax.set_ylabel('Percentage of Reliable Cells (%)', fontsize=16)
         ax.set_xticks(x)
@@ -3643,12 +4065,15 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
         ax.yaxis.grid(True, linestyle='--', alpha=0.4)
         ax.set_axisbelow(True)
 
-        from matplotlib.lines import Line2D
-        animal_handles = [Line2D([0], [0], marker=marker_map[a], color='w',
-                                 markerfacecolor='#888888', markeredgecolor='white',
-                                 markersize=8, label=a) for a in animals]
-        ax.legend(handles=animal_handles, loc='upper right',
-                  framealpha=0.9, edgecolor='gray', fontsize=10, title='Animal')
+        if show_animals:
+            from matplotlib.lines import Line2D
+            animal_handles = [Line2D([0], [0], marker=marker_map[a], color='w',
+                                     markerfacecolor='#888888', markeredgecolor='white',
+                                     markersize=8, label=a) for a in animals]
+            ax.legend(handles=animal_handles, loc='upper right',
+                      framealpha=0.9, edgecolor='gray', fontsize=10, title='Animal')
+        else:
+            ax.legend(loc='upper right', framealpha=0.9, edgecolor='gray', fontsize=12)
 
         plt.tight_layout()
         fig.suptitle('Modulated Cells', fontsize=22, color='black', y=1.05, fontweight='bold')
@@ -3656,7 +4081,8 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
 
         return fig
 
-    def plot_distance_bars(self, group_by=None, condition='both', min_cells=10, rf_range=None):
+    def plot_distance_bars(self, group_by=None, condition='both', min_cells=10, rf_range=None,
+                           show_animals=True):
         """
         Bar plot of preferred distance distribution per group, with SEM error bars and per-animal scatter dots.
 
@@ -3671,6 +4097,9 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
             'monocular', 'binocular', 'both', 'reliable', or 'un-modulated'.
         min_cells : int
             Minimum number of target cells an animal must have in a group to be included (default: 10).
+        show_animals : bool
+            If True (default), overlay per-animal scatter dots and show an animal legend.
+            If False, hide the dots and show the category (distance) legend instead.
 
         Returns
         -------
@@ -3745,7 +4174,7 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
         marker_map = {a: animal_markers[k % len(animal_markers)] for k, a in enumerate(animals)}
 
         rng = np.random.default_rng(42)
-        fig, ax = plt.subplots(figsize=(max(8, n_groups * 2), 7))
+        fig, ax = plt.subplots(figsize=(max(11, n_groups * 2), 6))
 
         for j, dist in enumerate(distances):
             offset = (j - n_dists / 2 + 0.5) * (bar_width + bar_gap)
@@ -3763,13 +4192,14 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
                        label=f'Distance {dist}' if i == 0 else '')
                 ax.errorbar(x[i] + offset, mean, yerr=sem,
                             fmt='none', color='black', capsize=3, linewidth=1.5)
-                for animal, val in zip(animals, vals):
-                    if not np.isnan(val):
-                        marker = marker_map[animal]
-                        jitter = rng.uniform(-bar_width * 0.3, bar_width * 0.3)
-                        ax.scatter(x[i] + offset + jitter, val, marker=marker, color='#888888',
-                                   s=50, zorder=5, alpha=0.6, edgecolors='white', linewidths=0.5,
-                                   label=animal if (i == 0 and j == 0) else '')
+                if show_animals:
+                    for animal, val in zip(animals, vals):
+                        if not np.isnan(val):
+                            marker = marker_map[animal]
+                            jitter = rng.uniform(-bar_width * 0.3, bar_width * 0.3)
+                            ax.scatter(x[i] + offset + jitter, val, marker=marker, color='#888888',
+                                       s=50, zorder=5, alpha=0.6, edgecolors='white', linewidths=0.5,
+                                       label=animal if (i == 0 and j == 0) else '')
 
         if condition in ('reliable', 'un-modulated'):
             ax.set_ylabel('Percentage of Reliable Cells (%)', fontsize=16)
@@ -3783,12 +4213,15 @@ class MultiAnimalVisualizer(SessionVisualizerBase):
         ax.yaxis.grid(True, linestyle='--', alpha=0.4)
         ax.set_axisbelow(True)
 
-        from matplotlib.lines import Line2D
-        animal_handles = [Line2D([0], [0], marker=marker_map[a], color='w',
-                                 markerfacecolor='#888888', markeredgecolor='white',
-                                 markersize=8, label=a) for a in animals]
-        ax.legend(handles=animal_handles, loc='upper right',
-                  framealpha=0.9, edgecolor='gray', fontsize=10, title='Animal')
+        if show_animals:
+            from matplotlib.lines import Line2D
+            animal_handles = [Line2D([0], [0], marker=marker_map[a], color='w',
+                                     markerfacecolor='#888888', markeredgecolor='white',
+                                     markersize=8, label=a) for a in animals]
+            ax.legend(handles=animal_handles, loc='upper right',
+                      framealpha=0.9, edgecolor='gray', fontsize=10, title='Animal')
+        else:
+            ax.legend(loc='upper right', framealpha=0.9, edgecolor='gray', fontsize=12)
 
         plt.tight_layout()
         condition_label = condition.capitalize() if condition != 'both' else 'Combined'

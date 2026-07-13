@@ -288,6 +288,134 @@ class CrossExperimentAnalysis:
         ax.set_title(f'{base}{rho_txt} (n={len(sub)})')
         if xlim is not None:
             ax.set_xlim(xlim)
+        # default to the eye's full screen range (right: 0..120, left: -120..0)
+        if ylim is None:
+            ylim = (0, 120) if eye == 'right' else (-120, 0)
+        ax.set_ylim(ylim)
+        plt.tight_layout()
+        return fig
+
+    def plot_rf_scatter_both(self, cells=None, corr_threshold=None, fit=True,
+                             xlim=None, ylim=(-120, 120)):
+        """
+        Both eyes on one axis, for cells reliable in distance and in >=1 eye.
+
+        Each cell sits at one x (its distance-experiment RF angle, deg). A cell
+        reliable in BOTH eyes contributes two points -- left-eye RF (red,
+        negative px) and right-eye RF (blue, positive px) -- joined by a vertical
+        line whose span is that cell's left/right RF disparity. A cell reliable
+        in only ONE eye contributes a single point for that eye, with no
+        connector.
+
+        Parameters
+        ----------
+        cells : sequence of int, optional
+            Explicit cell ids to plot. Overrides the reliability selection (both
+            eyes' points are drawn and connected); only ids present in the merged
+            table are kept. ``corr_threshold`` still applies on top if also given.
+        corr_threshold : float, optional
+            If given, additionally require the split-half correlation (rho) to be
+            >= this value: in the distance experiment for inclusion, and per eye
+            for that eye's point to be shown.
+        fit : bool
+            Overlay a linear fit per eye (red=left, blue=right), each over the
+            cells reliable in that eye, with slope + Pearson r in the legend.
+        """
+        m = self.merged
+        needed = {'distance_RF', 'left_px', 'right_px'}
+        missing = needed - set(m.columns)
+        if missing:
+            raise KeyError(
+                f"merged table is missing {sorted(missing)}; this plot needs both eyes' "
+                "px and the radial 'distance_RF'. Regenerate the DataFrames (a both-eye "
+                "disparity session) if missing.")
+
+        left_rel = (m['left_reliable'] if 'left_reliable' in m.columns else m['goggles_reliable']).astype(bool)
+        right_rel = (m['right_reliable'] if 'right_reliable' in m.columns else m['goggles_reliable']).astype(bool)
+
+        if cells is not None:
+            cells = [int(c) for c in cells]
+            n_missing = len(set(cells) - set(m['cell'].astype(int)))
+            if n_missing:
+                print(f"[note] {n_missing} of {len(cells)} requested cells are not in the merged "
+                      "table (not common to both sessions); skipped.")
+            row_mask = m['cell'].astype(int).isin(cells)
+            left_ok = row_mask.copy()    # hand-picked: show both eyes regardless
+            right_ok = row_mask.copy()
+        else:
+            row_mask = m['distance_reliable'].astype(bool)   # distance required for inclusion
+            left_ok = left_rel.copy()
+            right_ok = right_rel.copy()
+
+        if corr_threshold is not None:
+            if 'distance_corr' in m.columns:
+                row_mask &= m['distance_corr'] >= corr_threshold
+            if 'left_mean_corr' in m.columns:
+                left_ok &= m['left_mean_corr'] >= corr_threshold
+            if 'right_mean_corr' in m.columns:
+                right_ok &= m['right_mean_corr'] >= corr_threshold
+
+        left_ok &= row_mask
+        right_ok &= row_mask
+        keep = left_ok | right_ok
+
+        sub = m.loc[keep, ['cell', 'distance_RF', 'left_px', 'right_px']].copy()
+        sub['left_ok'] = left_ok[keep].values
+        sub['right_ok'] = right_ok[keep].values
+
+        left_pts = sub[sub['left_ok']].dropna(subset=['distance_RF', 'left_px'])
+        right_pts = sub[sub['right_ok']].dropna(subset=['distance_RF', 'right_px'])
+        both_pts = sub[sub['left_ok'] & sub['right_ok']].dropna(
+            subset=['distance_RF', 'left_px', 'right_px'])
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        # vertical connectors for binocular cells first, so the points draw on top
+        for _, row in both_pts.iterrows():
+            ax.plot([row['distance_RF'], row['distance_RF']],
+                    [row['left_px'], row['right_px']],
+                    color='gray', linewidth=1, alpha=0.6, zorder=1)
+        ax.scatter(left_pts['distance_RF'], left_pts['left_px'], color='red', edgecolor='black',
+                   alpha=0.8, zorder=2, label=f'Left eye (n={len(left_pts)})')
+        ax.scatter(right_pts['distance_RF'], right_pts['right_px'], color='blue', edgecolor='black',
+                   alpha=0.8, zorder=2, label=f'Right eye (n={len(right_pts)})')
+        ax.axhline(0, color='gray', linestyle='--', linewidth=1)
+
+        if fit:
+            for pts, px_col, color, name in ((left_pts, 'left_px', 'red', 'Left'),
+                                             (right_pts, 'right_px', 'blue', 'Right')):
+                if len(pts) >= 2:
+                    x = pts['distance_RF'].to_numpy(float)
+                    y = pts[px_col].to_numpy(float)
+                    slope, intercept = np.polyfit(x, y, 1)
+                    r = np.corrcoef(x, y)[0, 1]
+                    xs = np.linspace(x.min(), x.max(), 100)
+                    ax.plot(xs, slope * xs + intercept, color=color, linewidth=2, zorder=3,
+                            label=f'{name}: px = {slope:.2f}·deg {intercept:+.1f}  (r={r:.2f})')
+
+        if cells is not None:   # only label points for a hand-picked group
+            for _, row in sub.iterrows():
+                yval = row['right_px'] if row['right_ok'] and not np.isnan(row['right_px']) else row['left_px']
+                ax.annotate(str(int(row['cell'])), (row['distance_RF'], yval),
+                            fontsize=7, ha='center', va='bottom',
+                            xytext=(0, 2), textcoords='offset points')
+
+        # mean vertical distance between the two eyes' RFs (binocular cells only)
+        vdist = (both_pts['right_px'] - both_pts['left_px']).to_numpy(float)
+        if len(vdist):
+            mean_v, std_v = float(np.mean(vdist)), float(np.std(vdist))
+            ax.text(0.02, 0.98,
+                    f'mean |R−L| = {mean_v:.1f} ± {std_v:.1f} px (n={len(vdist)} binoc.)',
+                    transform=ax.transAxes, ha='left', va='top', fontsize=11,
+                    bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray', alpha=0.8))
+
+        rho_txt = f', ρ≥{corr_threshold}' if corr_threshold is not None else ''
+        base = 'Hand-picked cells' if cells is not None else 'Reliable in distance & ≥1 eye'
+        ax.set_xlabel('Distance RF (deg)')
+        ax.set_ylabel('Goggles RF (px)')
+        ax.set_title(f'{base}{rho_txt} (n={len(sub)})')
+        ax.legend(frameon=False, fontsize=12)
+        if xlim is not None:
+            ax.set_xlim(xlim)
         if ylim is not None:
             ax.set_ylim(ylim)
         plt.tight_layout()

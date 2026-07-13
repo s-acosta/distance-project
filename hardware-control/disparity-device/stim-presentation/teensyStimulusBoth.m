@@ -38,7 +38,7 @@ arguments
     end_point    (1,1) double
     opts.stim_size    (1,1) double = 30
     opts.disparities   (1,:) double = 0         % Right-eye disparity offsets in common frame (px)
-    opts.offset        (1,1) double = 16.5         % Half inter-screen gap (px); left eye offset = -offset, right = +offset
+    opts.offset        (1,1) double = 16.5       % Half inter-screen gap (px); left eye offset = -offset, right = +offset
     opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
     opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
     opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard

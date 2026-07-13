@@ -14,6 +14,11 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 % the left-eye angle before the deg->pixel conversion, so left frames are
 % precomputed per disparity condition; the right eye is shared across conditions.
 %
+% Set opts.monocular=true to instead present ONE eye per trial (the other stays
+% gray), alternating eyes like teensyStimulusMonocular. Each eye sweeps its own
+% fit's pixel range; disparity is ignored (D=0). Trials = 2*n_repeats (per eye),
+% and stim_log.eye_order (1=right, 2=left) records the active eye per trial.
+%
 % Left screen is the negative pixel axis, right screen the positive axis; both
 % meet at an inner (nasal) edge of 0. Frames are precomputed with make_ball_frame;
 % no video files needed. Send order alternates per trial to counterbalance the
@@ -23,6 +28,7 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 %   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4)
 %   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'disparities', [-10 0 10])
 %   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'preview', true)
+%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'monocular', true)
 %
 % Required args:
 %   left_slope, left_intercept   - left-eye deg->pixel fit
@@ -46,7 +52,8 @@ arguments
     opts.start_deg     (1,1) double = -30        % Fixed sweep start (deg)
     opts.end_deg       (1,1) double = 60         % Fixed sweep end (deg)
     opts.stim_size     (1,1) double = 30
-    opts.disparities   (1,:) double = 0          % LEFT-eye disparity offsets (degrees)
+    opts.disparities   (1,:) double = 0          % LEFT-eye disparity offsets (degrees); ignored if monocular
+    opts.monocular     (1,1) logical = false     % One eye per trial (other gray), alternating eyes; disparity ignored (D=0)
     opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
     opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
     opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard
@@ -59,7 +66,7 @@ arguments
     opts.pre_time      (1,1) double = 2.0        % Gray screen before stim (s)
     opts.post_time     (1,1) double = 3.0        % Gray screen after stim (s)
     opts.target_fps    (1,1) double = 10         % Serial playback FPS
-    opts.brightness    (1,1) double = 1.0        % Luminance scale (0-1)
+    opts.brightness    (1,1) double = 0.6        % Luminance scale (0-1)
     opts.bw            (1,1) logical = false     % Black background, solid white ball
     opts.shuffle       (1,1) logical = true      % Randomize trial order across conditions
     opts.DAQ_flag      (1,1) logical = false
@@ -73,7 +80,11 @@ frame_interval  = 1 / opts.target_fps;
 num_stim_frames = round(opts.stim_duration * opts.target_fps);
 stim_duration   = num_stim_frames / opts.target_fps;  % actual duration after rounding
 trial_dur       = opts.pre_time + stim_duration + opts.post_time;
-total_trials    = opts.n_repeats * n_disp;
+if opts.monocular
+    total_trials = 2 * opts.n_repeats;   % n_repeats per eye
+else
+    total_trials = opts.n_repeats * n_disp;
+end
 total_dur       = trial_dur * total_trials;
 
 % Visual angle for each stimulus frame (same for every trial)
@@ -123,10 +134,17 @@ end
 
 % Left eye (one array per disparity condition): left_pixel = left_px(deg + D_deg), in [-W, 0]
 % Ball is visible when left_pixel in [-W, 0]; pass -left_pixel to make_ball_frame (flips direction)
-left_eye_frames_by_disparity   = cell(1, n_disp);
-left_eye_payloads_by_disparity = cell(1, n_disp);
-for disparity_idx = 1:n_disp
-    D_deg = opts.disparities(disparity_idx);
+% Monocular ignores disparity, so only the D=0 set is built (index 1).
+if opts.monocular
+    left_disp_list = 0;
+else
+    left_disp_list = opts.disparities;
+end
+n_left_sets = numel(left_disp_list);
+left_eye_frames_by_disparity   = cell(1, n_left_sets);
+left_eye_payloads_by_disparity = cell(1, n_left_sets);
+for disparity_idx = 1:n_left_sets
+    D_deg = left_disp_list(disparity_idx);
     left_eye_frames_by_disparity{disparity_idx}   = cell(1, num_stim_frames);
     left_eye_payloads_by_disparity{disparity_idx} = cell(1, num_stim_frames);
 
@@ -154,10 +172,25 @@ for disparity_idx = 1:n_disp
 end
 
 % === TRIAL ORDER ===
-cond_list = repelem(1:n_disp, opts.n_repeats);
-if opts.shuffle
-    rng(0);
-    cond_list = cond_list(randperm(total_trials));
+if opts.monocular
+    % Alternating pairs [R,L],[L,R],... so each eye gets n_repeats trials,
+    % never the same eye more than twice in a row (1=right active, 2=left active)
+    eye_seq = zeros(1, total_trials);
+    for p = 1:opts.n_repeats
+        idx = (p-1)*2 + 1;
+        if mod(p, 2) == 1
+            eye_seq(idx:idx+1) = [1, 2];
+        else
+            eye_seq(idx:idx+1) = [2, 1];
+        end
+    end
+    cond_list = ones(1, total_trials);   % always the D=0 left set (index 1)
+else
+    cond_list = repelem(1:n_disp, opts.n_repeats);
+    if opts.shuffle
+        rng(0);
+        cond_list = cond_list(randperm(total_trials));
+    end
 end
 
 % Lead-eye alternates every trial: 1=right leads, 2=left leads
@@ -165,14 +198,26 @@ lead_seq = mod((0:total_trials-1), 2) + 1;
 
 if opts.verbose
     fprintf('\n=== Teensy Angle-Based Stimulus ===\n');
+    if opts.monocular
+        fprintf('Mode: MONOCULAR (one eye per trial, disparity ignored)\n');
+    else
+        fprintf('Mode: BINOCULAR\n');
+    end
     fprintf('Angle sweep: %.1f to %.1f deg\n', opts.start_deg, opts.end_deg);
-    fprintf('Left-eye disparities: %s deg\n', mat2str(opts.disparities));
-    fprintf('n_repeats per condition: %d | Total trials: %d\n', opts.n_repeats, total_trials);
+    if opts.monocular
+        fprintf('n_repeats per eye: %d | Total trials: %d\n', opts.n_repeats, total_trials);
+        fprintf('Active eye per trial (1=R,2=L): %s\n', mat2str(eye_seq));
+    else
+        fprintf('Left-eye disparities: %s deg\n', mat2str(opts.disparities));
+        fprintf('n_repeats per condition: %d | Total trials: %d\n', opts.n_repeats, total_trials);
+    end
     fprintf('Trial structure: PRE %.1fs | STIM %.2fs | POST %.1fs (%.2fs total)\n', ...
         opts.pre_time, stim_duration, opts.post_time, trial_dur);
     fprintf('Total experiment: %.1f s (%.1f min)\n', total_dur, total_dur/60);
     fprintf('Shuffle: %s\n', string(opts.shuffle));
-    fprintf('Condition order (disparity deg): %s\n', mat2str(opts.disparities(cond_list)));
+    if ~opts.monocular
+        fprintf('Condition order (disparity deg): %s\n', mat2str(opts.disparities(cond_list)));
+    end
     fprintf('Lead eye per trial (1=R,2=L): %s\n', mat2str(lead_seq));
     if opts.preview
         fprintf('MODE: PREVIEW (screen only, no Teensy)\n');
@@ -215,6 +260,11 @@ end
 % === INITIALIZE LOG ===
 stim_log = struct();
 stim_log.parameters          = opts;
+if opts.monocular
+    stim_log.mode = 'monocular';
+else
+    stim_log.mode = 'binocular';
+end
 stim_log.left_fit            = [left_slope, left_intercept];
 stim_log.right_fit           = [right_slope, right_intercept];
 stim_log.start_deg           = opts.start_deg;
@@ -222,7 +272,12 @@ stim_log.end_deg             = opts.end_deg;
 stim_log.angles              = angles;
 stim_log.stim_size           = opts.stim_size;
 stim_log.disparities         = opts.disparities;
-stim_log.trial_disparity_deg = opts.disparities(cond_list);
+if opts.monocular
+    stim_log.eye_order        = eye_seq;                  % 1=right active, 2=left active
+    stim_log.trial_disparity_deg = zeros(1, total_trials);
+else
+    stim_log.trial_disparity_deg = opts.disparities(cond_list);
+end
 stim_log.lead_eye            = lead_seq;
 stim_log.trial_start         = zeros(1, total_trials);
 stim_log.pre_start           = zeros(1, total_trials);
@@ -261,26 +316,50 @@ end
 % === MAIN TRIAL LOOP ===
 for trial = 1:total_trials
     d_idx  = cond_list(trial);
-    D_deg  = opts.disparities(d_idx);
     lead   = lead_seq(trial);
 
-    current_left_payloads = left_eye_payloads_by_disparity{d_idx};
-    current_left_frames   = left_eye_frames_by_disparity{d_idx};
+    % Which eyes are active this trial, and the left-eye disparity in play
+    if opts.monocular
+        active_eye = eye_seq(trial);        % 1=right, 2=left
+        right_on   = (active_eye == 1);
+        left_on    = (active_eye == 2);
+        D_deg      = 0;                      % disparity ignored in monocular
+    else
+        right_on   = true;
+        left_on    = true;
+        D_deg      = opts.disparities(d_idx);
+    end
+
+    % Per-eye frame/payload sources for the STIM phase (used only when the eye is on)
+    current_right_payloads = right_eye_payloads;
+    current_right_frames   = right_eye_frames;
+    current_left_payloads  = left_eye_payloads_by_disparity{d_idx};
+    current_left_frames    = left_eye_frames_by_disparity{d_idx};
 
     if opts.verbose
         lead_str = 'right'; if lead == 2, lead_str = 'left'; end
-        fprintf('--- Trial %d/%d | left disparity=%+.1f deg | lead=%s ---\n', ...
-            trial, total_trials, D_deg, lead_str);
+        if opts.monocular
+            eye_str = 'right'; if left_on, eye_str = 'left'; end
+            fprintf('--- Trial %d/%d | active eye=%s | lead=%s ---\n', ...
+                trial, total_trials, eye_str, lead_str);
+        else
+            fprintf('--- Trial %d/%d | left disparity=%+.1f deg | lead=%s ---\n', ...
+                trial, total_trials, D_deg, lead_str);
+        end
     end
 
     trial_frame_times = [];
     trial_offset = (trial - 1) * trial_dur;
 
-    % Pixel endpoints for this trial
-    stim_log.left_eye_start_px(trial)  = left_px(opts.start_deg + D_deg);
-    stim_log.left_eye_end_px(trial)    = left_px(opts.end_deg   + D_deg);
-    stim_log.right_eye_start_px(trial) = right_px(opts.start_deg);
-    stim_log.right_eye_end_px(trial)   = right_px(opts.end_deg);
+    % Pixel endpoints for this trial (idle eye in monocular stays NaN)
+    if left_on
+        stim_log.left_eye_start_px(trial) = left_px(opts.start_deg + D_deg);
+        stim_log.left_eye_end_px(trial)   = left_px(opts.end_deg   + D_deg);
+    end
+    if right_on
+        stim_log.right_eye_start_px(trial) = right_px(opts.start_deg);
+        stim_log.right_eye_end_px(trial)   = right_px(opts.end_deg);
+    end
 
     stim_log.trial_start(trial) = toc(experiment_start);
 
@@ -315,20 +394,37 @@ for trial = 1:total_trials
     end
 
     if opts.preview
-        title(ax_R, sprintf('T%d STIM', trial));
-        title(ax_L, sprintf('T%d STIM (disp=%+.1f)', trial, D_deg));
+        if opts.monocular
+            if right_on, r_lbl = ' (active)'; else, r_lbl = ' (idle)'; end
+            if left_on,  l_lbl = ' (active)'; else, l_lbl = ' (idle)'; end
+            title(ax_R, sprintf('T%d STIM%s', trial, r_lbl));
+            title(ax_L, sprintf('T%d STIM%s', trial, l_lbl));
+        else
+            title(ax_R, sprintf('T%d STIM', trial));
+            title(ax_L, sprintf('T%d STIM (disp=%+.1f)', trial, D_deg));
+        end
     end
 
     stim_offset = trial_offset + opts.pre_time;
     for stim_frame_idx = 1:num_stim_frames
+        % Active eye shows the ball; idle eye (monocular) stays gray
+        if right_on
+            frame_R = current_right_frames{stim_frame_idx};   payload_R = current_right_payloads{stim_frame_idx};
+        else
+            frame_R = gray_img_R;                             payload_R = gray_payload_R;
+        end
+        if left_on
+            frame_L = current_left_frames{stim_frame_idx};    payload_L = current_left_payloads{stim_frame_idx};
+        else
+            frame_L = gray_img_L;                             payload_L = gray_payload_L;
+        end
+
         if opts.preview
-            set(ih_R, 'CData', rot90(right_eye_frames{stim_frame_idx},      -1));
-            set(ih_L, 'CData', rot90(current_left_frames{stim_frame_idx},    1));
+            set(ih_R, 'CData', rot90(frame_R, -1));
+            set(ih_L, 'CData', rot90(frame_L,  1));
             drawnow;
         else
-            send_both(s_right, right_eye_payloads{stim_frame_idx}, ...
-                      s_left,  current_left_payloads{stim_frame_idx}, ...
-                      opts.W, opts.H, lead);
+            send_both(s_right, payload_R, s_left, payload_L, opts.W, opts.H, lead);
         end
 
         trial_frame_times(end+1) = toc(experiment_start); %#ok<AGROW>

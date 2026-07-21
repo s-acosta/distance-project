@@ -10,19 +10,20 @@ import matplotlib.pyplot as plt
 
 from utils.helpers import setup_plot_style
 from src.analysis.CellAnalysis import CellAnalyzer
+from src.viz._base import CellVizBase
 
 setup_plot_style()
 
 
-class CellVisualizer:
+class CellVisualizer(CellVizBase):
     """
     Per-cell plots for a disparity (left/right eye) session.
 
     Examples
     --------
-    >>> from src.data.DisparityDevice import DisparityDevice
+    >>> from src.data.MonocularDevice import MonocularDevice
     >>> from src.viz.CellVisualizer import CellVisualizer
-    >>> D = DisparityDevice(mouse_name='SAM045', record_date='260609', experiment_name='goggles_left')
+    >>> D = MonocularDevice(mouse_name='SAM045', record_date='260609', experiment_name='goggles_left')
     >>> viz = CellVisualizer(D)
     >>> viz.make_eye_plot(cell=116, eye='left')          # single eye
     >>> viz.make_comparison_plot(cell=348)               # both eyes (if present)
@@ -32,20 +33,17 @@ class CellVisualizer:
     EYE_CMAP = {'left': 'Reds', 'right': 'Blues'}
 
     def __init__(self, device):
-        self.device = device
+        super().__init__(device)
         self.analyzer = CellAnalyzer(device)
 
-    def _vlimits(self, cell):
-        idx = np.where(self.device.suite2p_id == cell)[0][0]
-        vmin = np.percentile(self.device.response[idx, :], 1)
-        vmax = np.percentile(self.device.response[idx, :], 99)
-        return vmin, vmax
-
-    def make_comparison_plot(self, cell):
+    def make_comparison_plot(self, cell, fig=None):
         """
-        Three panels: left-eye trial heatmap, right-eye trial heatmap, and the
-        two mean±SEM tuning curves overlaid (red=left, blue=right) with the RF
-        pixel position annotated per eye. Requires both eyes to be present.
+        Four panels: left-eye trial heatmap, right-eye trial heatmap, and the two
+        mean±SEM tuning curves overlaid (red=left, blue=right) vs pixels and vs
+        angle, with the RF position annotated per eye. Requires both eyes.
+
+        Pass ``fig`` (a Figure or SubFigure) to draw into it instead of creating a
+        new figure (used by the combined monocular+binocular view).
         """
         if not all(e in self.device.present_eyes for e in ('left', 'right')):
             raise ValueError(
@@ -60,7 +58,10 @@ class CellVisualizer:
         left_mean, left_sem = self.device.get_all_traces(cell, eye='left', mean_trace=True)
         right_mean, right_sem = self.device.get_all_traces(cell, eye='right', mean_trace=True)
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        own_fig = fig is None
+        if own_fig:
+            fig = plt.figure(figsize=(22, 5))
+        axes = fig.subplots(1, 4)
 
         ax = axes[0]
         ax.pcolor(left_traces, vmin=vmin, vmax=vmax, cmap=self.EYE_CMAP['left'])
@@ -76,35 +77,57 @@ class CellVisualizer:
         ax.set_title('Right Eye', fontsize=28)
         ax.tick_params(axis='both', which='major', labelsize=18)
 
-        ax = axes[2]
-        left_range = self.device.get_screen_range('left')    # unsigned pixel magnitude
-        right_range = self.device.get_screen_range('right')
-
         left_rf_idx, _ = self.device.find_rf_position(cell, eye='left')
         right_rf_idx, _ = self.device.find_rf_position(cell, eye='right')
-        left_rf_px = left_range[left_rf_idx]
-        right_rf_px = right_range[right_rf_idx]
 
-        ax.fill_between(left_range, left_mean - left_sem, left_mean + left_sem, alpha=0.2, color='red')
-        ax.plot(left_range, left_mean, linewidth=2, color='red')
-        ax.fill_between(right_range, right_mean - right_sem, right_mean + right_sem, alpha=0.2, color='blue')
-        ax.plot(right_range, right_mean, linewidth=2, color='blue')
+        # --- panel 3: tuning vs screen pixels (left on the negative axis) ---
+        ax = axes[2]
+        left_px = self.device.get_signed_screen_range('left')     # left -> negative side
+        right_px = self.device.get_signed_screen_range('right')   # right -> positive side
 
-        ax.set_xlim(right_range[0], right_range[-1])
+        ax.fill_between(left_px, left_mean - left_sem, left_mean + left_sem, alpha=0.2, color='red')
+        ax.plot(left_px, left_mean, linewidth=2, color='red')
+        ax.fill_between(right_px, right_mean - right_sem, right_mean + right_sem, alpha=0.2, color='blue')
+        ax.plot(right_px, right_mean, linewidth=2, color='blue')
+
+        ax.set_xlim(left_px.min(), right_px.max())
         ax.set_ylim(vmin, vmax)
-        ax.set_xlabel('|Pixels|', fontsize=24)
+        ax.set_xlabel('Pixels', fontsize=24)
         ax.set_ylabel('Activity (z-score)', fontsize=20)
-        ax.set_title('Mean Trace ± SEM', fontsize=28)
+        ax.set_title('Mean Trace ± SEM (px)', fontsize=24)
         ax.tick_params(axis='both', which='major', labelsize=20)
-        if len(ax.lines) >= 2:
-            ax.legend(
-                handles=[ax.lines[0], ax.lines[1]],
-                labels=[f'Left Eye (RF: {-left_rf_px:.1f} px)', f'Right Eye (RF: {right_rf_px:.1f} px)'],
-                fontsize=16, loc='best', frameon=False,
-            )
+        ax.legend(
+            handles=[ax.lines[0], ax.lines[1]],
+            labels=[f'Left Eye (RF: {left_px[left_rf_idx]:.1f} px)',
+                    f'Right Eye (RF: {right_px[right_rf_idx]:.1f} px)'],
+            fontsize=16, loc='best', frameon=False,
+        )
 
-        fig.suptitle(f'Cell {cell}', fontsize=20)
-        plt.tight_layout()
+        # --- panel 4: tuning vs visual angle (shared axis for both eyes) ---
+        ax = axes[3]
+        ang = self.device.get_angle_range()
+
+        ax.fill_between(ang, left_mean - left_sem, left_mean + left_sem, alpha=0.2, color='red')
+        ax.plot(ang, left_mean, linewidth=2, color='red')
+        ax.fill_between(ang, right_mean - right_sem, right_mean + right_sem, alpha=0.2, color='blue')
+        ax.plot(ang, right_mean, linewidth=2, color='blue')
+
+        ax.set_xlim(ang[0], ang[-1])
+        ax.set_ylim(vmin, vmax)
+        ax.set_xlabel('Angle (deg)', fontsize=24)
+        ax.set_ylabel('Activity (z-score)', fontsize=20)
+        ax.set_title('Mean Trace ± SEM (deg)', fontsize=24)
+        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.legend(
+            handles=[ax.lines[0], ax.lines[1]],
+            labels=[f'Left Eye (RF: {ang[left_rf_idx]:.1f}°)',
+                    f'Right Eye (RF: {ang[right_rf_idx]:.1f}°)'],
+            fontsize=16, loc='best', frameon=False,
+        )
+
+        if own_fig:
+            fig.suptitle(f'Cell {cell}', fontsize=20)
+            fig.tight_layout()
         return fig
 
     def make_eye_plot(self, cell, eye=None):

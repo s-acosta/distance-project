@@ -3,18 +3,83 @@ import pandas as pd
 import os
 
 
+def split_half_reliability(all_traces, n_iterations=100, shift_window=None):
+    """
+    Split-half reliability from a stack of single-trial traces.
+
+    Randomly splits the trials in half, correlates the two mean traces, and
+    repeats ``n_iterations`` times. A circularly-shifted null is computed in
+    parallel. Paradigm-independent: the caller decides which trials go in
+    (an eye's trials, a disparity's trials, ...).
+
+    Parameters
+    ----------
+    all_traces : ndarray, shape (n_repeats, n_time)
+        Single-trial traces, already truncated to a common length.
+    n_iterations : int
+    shift_window : int or None
+        Max circular shift for the null; defaults to half the trace length.
+
+    Returns
+    -------
+    (corr, corr_shifted) : tuple of ndarray
+        Split-half correlations and shifted-null correlations.
+    """
+    all_traces = np.asarray(all_traces, dtype=float)
+    if all_traces.ndim != 2 or all_traces.shape[0] < 2:
+        return np.full(n_iterations, np.nan), np.full(n_iterations, np.nan)
+
+    n_repeats, n_time = all_traces.shape
+    n_halves = int(np.ceil(n_repeats / 2))
+    max_shift = n_time // 2 if shift_window is None else int(min(abs(shift_window), n_time))
+
+    corr = np.zeros(n_iterations, dtype=float)
+    corr_shifted = np.zeros(n_iterations, dtype=float)
+
+    def _safe_corr(a, b):
+        c = np.corrcoef(a, b)[0, 1]
+        return 0.0 if np.isnan(c) else c
+
+    time_idx = np.arange(n_time)
+
+    for i in range(n_iterations):
+        shuffled_idx = np.random.permutation(n_repeats)
+        first_idx = shuffled_idx[:n_halves]
+        second_idx = shuffled_idx[n_halves:]
+
+        first_mean = all_traces[first_idx].mean(axis=0)
+        second_mean = all_traces[second_idx].mean(axis=0)
+        corr[i] = _safe_corr(first_mean, second_mean)
+
+        shifts_first = np.random.randint(-max_shift, max_shift + 1, size=len(first_idx))
+        shifts_second = np.random.randint(-max_shift, max_shift + 1, size=len(second_idx))
+
+        first_shifted = all_traces[first_idx][
+            np.arange(len(first_idx))[:, None],
+            (time_idx - shifts_first[:, None]) % n_time,
+        ]
+        second_shifted = all_traces[second_idx][
+            np.arange(len(second_idx))[:, None],
+            (time_idx - shifts_second[:, None]) % n_time,
+        ]
+
+        corr_shifted[i] = _safe_corr(first_shifted.mean(axis=0), second_shifted.mean(axis=0))
+
+    return corr, corr_shifted
+
+
 class CellAnalyzer:
     """
     Per-cell analysis for a disparity (left/right eye) session.
 
     Computes split-half reliability per eye, eye-dominance (ODI), and the peak
-    receptive-field response. Requires a ``DisparityDevice`` for data access.
+    receptive-field response. Requires a ``MonocularDevice`` for data access.
 
     Examples
     --------
-    >>> from src.data.DisparityDevice import DisparityDevice
+    >>> from src.data.MonocularDevice import MonocularDevice
     >>> from src.analysis.CellAnalysis import CellAnalyzer
-    >>> D = DisparityDevice(mouse_name='SAM045', record_date='260609', experiment_name='goggles_left')
+    >>> D = MonocularDevice(mouse_name='SAM045', record_date='260609', experiment_name='goggles_left')
     >>> analyzer = CellAnalyzer(D)
     >>> analyzer.analyze_cell_reliability(cell=116, eye='left')
     """
@@ -45,46 +110,7 @@ class CellAnalyzer:
         min_len = min(t.shape[0] for t in traces)
         all_traces = np.array([t[:min_len] for t in traces], dtype=float)
 
-        if all_traces.ndim != 2 or all_traces.shape[0] < 2:
-            return np.full(n_iterations, np.nan), np.full(n_iterations, np.nan)
-
-        n_repeats, n_time = all_traces.shape
-        n_halves = int(np.ceil(n_repeats / 2))
-        max_shift = n_time // 2 if shift_window is None else int(min(abs(shift_window), n_time))
-
-        corr = np.zeros(n_iterations, dtype=float)
-        corr_shifted = np.zeros(n_iterations, dtype=float)
-
-        def _safe_corr(a, b):
-            c = np.corrcoef(a, b)[0, 1]
-            return 0.0 if np.isnan(c) else c
-
-        time_idx = np.arange(n_time)
-
-        for i in range(n_iterations):
-            shuffled_idx = np.random.permutation(n_repeats)
-            first_idx = shuffled_idx[:n_halves]
-            second_idx = shuffled_idx[n_halves:]
-
-            first_mean = all_traces[first_idx].mean(axis=0)
-            second_mean = all_traces[second_idx].mean(axis=0)
-            corr[i] = _safe_corr(first_mean, second_mean)
-
-            shifts_first = np.random.randint(-max_shift, max_shift + 1, size=len(first_idx))
-            shifts_second = np.random.randint(-max_shift, max_shift + 1, size=len(second_idx))
-
-            first_shifted = all_traces[first_idx][
-                np.arange(len(first_idx))[:, None],
-                (time_idx - shifts_first[:, None]) % n_time,
-            ]
-            second_shifted = all_traces[second_idx][
-                np.arange(len(second_idx))[:, None],
-                (time_idx - shifts_second[:, None]) % n_time,
-            ]
-
-            corr_shifted[i] = _safe_corr(first_shifted.mean(axis=0), second_shifted.mean(axis=0))
-
-        return corr, corr_shifted
+        return split_half_reliability(all_traces, n_iterations=n_iterations, shift_window=shift_window)
 
     def analyze_cell_reliability(self, cell, eye, n_iterations=200, stimulus_percentile=99):
         """

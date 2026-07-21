@@ -30,10 +30,10 @@ class SessionVisualizer:
 
     Examples
     --------
-    >>> from src.data.DisparityDevice import DisparityDevice
+    >>> from src.data.MonocularDevice import MonocularDevice
     >>> from src.analysis.CellAnalysis import SessionAnalyzer
     >>> from src.viz.SessionVisualizer import SessionVisualizer
-    >>> D = DisparityDevice(mouse_name='SAM044', record_date='260502', experiment_name='goggles_right-left')
+    >>> D = MonocularDevice(mouse_name='SAM044', record_date='260502', experiment_name='goggles_right-left')
     >>> df = SessionAnalyzer(D).analyze_session_stats()   # compute once
     >>> sv = SessionVisualizer(D, stats_df=df)
     >>> sv.print_summary()
@@ -42,11 +42,15 @@ class SessionVisualizer:
 
     EYE_COLOR = {'left': 'red', 'right': 'blue'}
 
+    # left / right / both-eye marker colors for the field map
+    FIELD_COLOR = {'left': 'red', 'right': 'blue', 'both': 'purple'}
+
     def __init__(self, device, stats_df=None, n_iterations=200):
         self.device = device
         self.analyzer = SessionAnalyzer(device)
         self.n_iterations = n_iterations
         self.stats_df = stats_df
+        self._suite2p = None
         setup_plot_style()
 
     # ----------------------------------------------------------------- stats
@@ -81,6 +85,32 @@ class SessionVisualizer:
             'right_only': right - both, 'left_only': left - both,
             'either': right | left, 'none': all_cells - (right | left),
         }
+
+    # ------------------------------------------- suite2p field-of-view helpers
+
+    def _load_suite2p(self):
+        """Lazy-load the session's suite2p ``stat`` + ``ops`` (cell footprints and
+        the reference FOV image), cached after first use."""
+        if self._suite2p is None:
+            plane = os.path.join(self.device.suite2p_dir, 'plane0')
+            self._suite2p = {
+                'stat': np.load(os.path.join(plane, 'stat.npy'), allow_pickle=True),
+                'ops': np.load(os.path.join(plane, 'ops.npy'), allow_pickle=True).item(),
+            }
+        return self._suite2p
+
+    def _fov_image(self):
+        """Background field-of-view image (registration reference, mean fallback)."""
+        ops = self._load_suite2p()['ops']
+        return ops['refImg'] if 'refImg' in ops else ops['meanImg']
+
+    def _cell_xy(self, cell):
+        """(x, y) pixel centroid of a cell's footprint (non-overlapping pixels)."""
+        stat = self._load_suite2p()['stat'][cell]
+        keep = ~stat['overlap']
+        if not keep.any():                      # cell buried under overlaps
+            keep = np.ones_like(stat['overlap'], dtype=bool)
+        return stat['xpix'][keep].mean(), stat['ypix'][keep].mean()
 
     @staticmethod
     def _pct(k, n):
@@ -227,6 +257,69 @@ class SessionVisualizer:
         self._require_both_eyes("RF difference")
         fig, ax = plt.subplots(figsize=(7, 4))
         self._draw_difference(ax)
+        plt.tight_layout()
+        return fig
+
+    def plot_location_map(self, ax=None, cell_size=60, show_unresponsive=True):
+        """
+        Scatter accepted cells on the imaging field of view, colored by which eye
+        reliably drives them: left (red), right (blue), both (purple). Mirrors
+        radial ``SessionVisualizer.plot_location_map``. Single-eye sessions color
+        reliable cells in that eye's color. Cells reliable to neither eye are
+        drawn small and gray when ``show_unresponsive`` is set.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axis to draw on. A new 9x9 figure is created when omitted.
+        cell_size : int, optional
+            Marker size for responsive cells (unresponsive cells are smaller).
+        show_unresponsive : bool, optional
+            Whether to also plot cells reliable to neither eye. Default True.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        sets = self.reliable_sets()
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(9, 9))
+        else:
+            fig = ax.get_figure()
+
+        bg = self._fov_image()
+        ax.imshow(bg, cmap='gray', origin='upper',
+                  vmin=np.percentile(bg, 1), vmax=np.percentile(bg, 99),
+                  extent=[0, bg.shape[1], bg.shape[0], 0])
+
+        if self.device.single_eye:
+            groups = [(self.device.eye, sets['reliable'], self.FIELD_COLOR[self.device.eye])]
+        else:
+            groups = [
+                ('left', sets['left_only'], self.FIELD_COLOR['left']),
+                ('right', sets['right_only'], self.FIELD_COLOR['right']),
+                ('both', sets['both'], self.FIELD_COLOR['both']),
+            ]
+        if show_unresponsive:
+            groups.append(('none', sets['none'], 'lightgray'))
+
+        for label, cells, color in groups:
+            if cells:
+                xy = np.array([self._cell_xy(c) for c in cells])
+                xs, ys = xy[:, 0], xy[:, 1]
+            else:
+                xs, ys = [], []
+            faint = label == 'none'
+            ax.scatter(xs, ys, c=color, edgecolor='black', linewidth=0.4,
+                       s=cell_size * 0.35 if faint else cell_size,
+                       alpha=0.5 if faint else 0.95,
+                       label=f'{label} (n={len(cells)})')
+
+        ax.invert_xaxis()
+        ax.invert_yaxis()                       # match radial FOV orientation
+        ax.axis('off')
+        ax.set_title(f'{self.device.session_name} — cells in field')
+        ax.legend(loc='upper right', frameon=True, fontsize=11)
         plt.tight_layout()
         return fig
 

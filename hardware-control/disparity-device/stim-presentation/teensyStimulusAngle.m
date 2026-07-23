@@ -64,7 +64,7 @@ arguments
     opts.W             (1,1) double = 240
     opts.n_repeats     (1,1) double = 12          % Repeats per disparity condition
     opts.pre_time      (1,1) double = 2.0        % Gray screen before stim (s)
-    opts.post_time     (1,1) double = 3.0        % Gray screen after stim (s)
+    opts.post_time     (1,1) double = 1.0        % Gray screen after stim (s)
     opts.target_fps    (1,1) double = 10         % Serial playback FPS
     opts.brightness    (1,1) double = 0.6        % Luminance scale (0-1)
     opts.bw            (1,1) logical = false     % Black background, solid white ball

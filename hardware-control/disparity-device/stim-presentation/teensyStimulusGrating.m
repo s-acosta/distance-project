@@ -66,7 +66,7 @@ arguments
     opts.H               (1,1) double = 240
     opts.W               (1,1) double = 240
     opts.n_repeats       (1,1) double = 12          % Repeats per disparity condition
-    opts.pre_time        (1,1) double = 1.0        % Gray screen before stim (s); La Chioma et al. 2020 use a 2s ITI, split here as pre+post
+    opts.pre_time        (1,1) double = 2.0        % Gray screen before stim (s); La Chioma et al. 2020 use a 2s ITI, split here as pre+post
     opts.post_time       (1,1) double = 1.0        % Gray screen after stim (s); see pre_time
     opts.target_fps      (1,1) double = 10          % Serial playback FPS
     opts.brightness      (1,1) double = 0.6        % Luminance scale (0-1)

@@ -322,7 +322,7 @@ class CrossExperimentVisualization:
         def x_right(d):
             return Dp.get_px_range('right', d) if units == 'px' else angle
         def x_left(d):
-            return Dp.get_px_range('left', d) if units == 'px' else angle + d
+            return Dp.get_px_range('left', d) if units == 'px' else angle - d
 
         for d, color in zip(disparities, colors):
             mn, sm = means[d]

@@ -431,10 +431,15 @@ class CrossExperimentAnalysis:
 
         ``signed`` puts both eyes on the stimulus' signed joint axis (left panel
         negative, right panel positive, meeting at a nasal edge of 0) — the
-        convention ``teensyStimulusAngle`` expects. The monocular df stores the
-        left eye's *drawn panel* pixel, which is the negation of its signed-axis
-        pixel, so the left eye is negated here and the right passed through.
-        With ``signed=False`` the raw dataframe pixels come back untouched.
+        convention ``teensyStimulusAngle`` expects. Whether the monocular df's
+        raw left_px is already on that axis depends on the session:
+        ``CellAnalysis.analyze_cell_stats`` signs it there (negative) whenever
+        both eyes were present, but leaves it as the *drawn panel* pixel
+        (non-negative) for a true single-eye session. Rather than assume either,
+        the sign is auto-detected from the data (a positive median means it's
+        still drawn-panel and needs negating); already-negative px is passed
+        through unchanged. With ``signed=False`` the raw dataframe pixels come
+        back untouched.
         """
         m = self.merged
         rel_col = f'{eye}_reliable' if f'{eye}_reliable' in m.columns else 'monocular_reliable'
@@ -483,7 +488,7 @@ class CrossExperimentAnalysis:
             cols.append(corr_col)
         sub = m.loc[mask, cols].dropna(subset=['distance_RF', px_col])
         sub = sub.rename(columns={px_col: 'px', corr_col: 'corr'})
-        if signed and eye == 'left':
+        if signed and eye == 'left' and len(sub) and sub['px'].median() > 0:
             sub['px'] = -sub['px']
         return sub
 
@@ -754,42 +759,45 @@ class CrossExperimentAnalysis:
         return fig
 
     def plot_rf_scatter_both(self, cells=None, corr_threshold=None, fit=True,
-                             xlim=None, ylim=(-120, 120), stim_device=None):
+                         xlim=None, ylim=(-120, 120), stim_device=None):
         """
-        Both eyes on one axis, for cells reliable in distance and in >=1 eye.
+            Both eyes on one axis, for cells reliable in distance and in >=1 eye.
 
-        Each cell sits at one x (its distance-experiment RF angle, deg). A cell
-        reliable in BOTH eyes contributes two points -- left-eye RF (red,
-        negative px) and right-eye RF (blue, positive px) -- joined by a vertical
-        line whose span is that cell's left/right RF disparity. A cell reliable
-        in only ONE eye contributes a single point for that eye, with no
-        connector.
+            Each cell sits at one x (its distance-experiment RF angle, deg). A cell
+            reliable in BOTH eyes contributes two points -- left-eye RF (red,
+            negative px) and right-eye RF (blue, positive px) -- joined by a vertical
+            line whose span is that cell's left/right RF disparity. A cell reliable
+            in only ONE eye contributes a single point for that eye, with no
+            connector.
 
-        Both eyes are drawn on the signed joint axis (see ``_calibration_subset``),
-        so the left/right span of a connector is a real disparity in stimulus
-        units rather than an artefact of the two panels' pixel conventions.
+            The left-eye sign convention (negative) is enforced by
+            ``_calibration_subset`` itself, so both eyes come back already on the
+            signed joint axis: the left/right span of a connector is a real
+            disparity in stimulus units rather than an artefact of the two panels'
+            pixel conventions.
 
-        Parameters
-        ----------
-        cells : sequence of int, optional
-            Explicit cell ids to plot. Overrides the reliability selection (both
-            eyes' points are drawn and connected); only ids present in the merged
-            table are kept. ``corr_threshold`` still applies on top if also given.
-        corr_threshold : float or dict, optional
-            Require the split-half correlation (rho) to be >= this value: in the
-            distance experiment for inclusion, and per eye for that eye's point to
-            be shown. A scalar applies the same threshold to all three; a dict
-            ``{'distance': .., 'left': .., 'right': ..}`` sets them independently
-            (a missing key skips the threshold for that condition).
-        fit : bool
-            Overlay a linear fit per eye (red=left, blue=right), each over the
-            cells reliable in that eye, with slope + Pearson r in the legend.
-        stim_device : goggles device, optional
-            The session whose pixels are on the y axis (i.e. the **monocular**
-            device). When given, overlays each eye's assumed deg->pixel fit and
-            the band of pixels that reached that eye's screen, so the recovered
-            fit can be read against the assumed one. See ``_draw_stim_reference``.
-        """
+            Parameters
+            ----------
+            cells : sequence of int, optional
+                Explicit cell ids to plot. Overrides the reliability selection (both
+                eyes' points are drawn and connected); only ids present in the merged
+                table are kept. ``corr_threshold`` still applies on top if also given.
+            corr_threshold : float or dict, optional
+                Require the split-half correlation (rho) to be >= this value: in the
+                distance experiment for inclusion, and per eye for that eye's point to
+                be shown. A scalar applies the same threshold to all three; a dict
+                ``{'distance': .., 'left': .., 'right': ..}`` sets them independently
+                (a missing key skips the threshold for that condition).
+            fit : bool
+                Overlay a linear fit per eye (red=left, blue=right), each over the
+                cells reliable in that eye, with slope + Pearson r in the legend.
+            stim_device : goggles device, optional
+                The session whose pixels are on the y axis (i.e. the **monocular**
+                device). When given, overlays each eye's assumed deg->pixel fit and
+                the band of pixels that reached that eye's screen, so the recovered
+                fit can be read against the assumed one. See ``_draw_stim_reference``.
+            """
+            
         left_pts = self._calibration_subset('left', cells=cells, corr_threshold=corr_threshold)
         right_pts = self._calibration_subset('right', cells=cells, corr_threshold=corr_threshold)
         both_pts = pd.merge(left_pts, right_pts, on='cell', suffixes=('_left', '_right'))
@@ -807,9 +815,9 @@ class CrossExperimentAnalysis:
                     [row['px_left'], row['px_right']],
                     color='gray', linewidth=1, alpha=0.6, zorder=1)
         ax.scatter(left_pts['distance_RF'], left_pts['px'], color='red', edgecolor='black',
-                   alpha=0.8, zorder=2, label=f'Left eye (n={len(left_pts)})')
+                alpha=0.8, zorder=2, label=f'Left eye (n={len(left_pts)})')
         ax.scatter(right_pts['distance_RF'], right_pts['px'], color='blue', edgecolor='black',
-                   alpha=0.8, zorder=2, label=f'Right eye (n={len(right_pts)})')
+                alpha=0.8, zorder=2, label=f'Right eye (n={len(right_pts)})')
         ax.axhline(0, color='gray', linestyle='--', linewidth=1)
 
         if fit:
@@ -819,7 +827,7 @@ class CrossExperimentAnalysis:
                     xs = np.linspace(f['deg_min'], f['deg_max'], 100)
                     ax.plot(xs, f['slope'] * xs + f['intercept'], color=color, linewidth=2, zorder=3,
                             label=f"{name}: px = {f['slope']:.2f}·deg {f['intercept']:+.1f}  "
-                                  f"(r={f['r']:.2f})")
+                                f"(r={f['r']:.2f})")
 
         if cells is not None:   # only label points for a hand-picked group
             labelled = pd.concat([right_pts, left_pts]).drop_duplicates(subset='cell')

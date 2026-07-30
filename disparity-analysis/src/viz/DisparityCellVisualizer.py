@@ -96,7 +96,7 @@ class DisparityCellVisualizer(CellVizBase):
         def x_right(d):
             return self.device.get_px_range('right', d) if units == 'px' else angle
         def x_left(d):
-            return self.device.get_px_range('left', d) if units == 'px' else angle + d
+            return self.device.get_px_range('left', d) if units == 'px' else angle - d
 
         for d, color in zip(disparities, colors):
             m, s = means[d]

@@ -4,7 +4,7 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 %
 % For each stimulus frame at visual angle `deg`:
 %   right_px = right_slope*deg + right_intercept                 (lives in [0, W])
-%   left_px  = left_slope*(deg + disparity_deg) + left_intercept (lives in [-W, 0])
+%   left_px  = left_slope*(deg - disparity_deg) + left_intercept (lives in [-W, 0])
 %
 % The angle sweep is fixed at start_deg -> end_deg (default -30 -> 60). Each eye
 % moves at its own pixel rate (its own slope), which is the correct behaviour for
@@ -13,6 +13,12 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 % Disparity is specified in DEGREES and applied to the LEFT eye only: it shifts
 % the left-eye angle before the deg->pixel conversion, so left frames are
 % precomputed per disparity condition; the right eye is shared across conditions.
+%
+% SIGN CONVENTION (matches La Chioma 2019 / primate literature):
+%   disparity < 0  -> CROSSED (near): left-eye stimulus shifts NASALLY  (toward pixel 0)
+%   disparity > 0  -> UNCROSSED (far): left-eye stimulus shifts TEMPORALLY (toward -W)
+% Implemented as left_px(deg - disparity_deg): with left_slope>0 and nasal=pixel 0,
+% a negative disparity increases left_px (nasal), a positive disparity decreases it (temporal).
 %
 % Set opts.monocular=true to instead present ONE eye per trial (the other stays
 % gray), alternating eyes like teensyStimulusMonocular. Each eye sweeps its own
@@ -26,7 +32,7 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 %
 % Usage:
 %   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4)
-%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'disparities', [-10 0 10])
+%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'disparities', [-10 0 10])  % snapshot shows automatically
 %   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'preview', true)
 %   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'monocular', true)
 %
@@ -72,6 +78,9 @@ arguments
     opts.DAQ_flag      (1,1) logical = false
     opts.scope         (1,1) string = '2p'       % 'widefield' or '2p'
     opts.preview       (1,1) logical = false     % Screen preview only, no Teensy
+    opts.snapshot       (1,1) logical = true     % Show a per-disparity snapshot montage at startup (binocular w/ disparity)
+    opts.snapshot_angle (1,1) double  = 0        % Visual angle (deg) for the snapshot; uses nearest swept frame
+    opts.snapshot_tick_deg (1,1) double = 30     % Spacing (deg) of the visual-angle ruler drawn on the snapshot
     opts.verbose       (1,1) logical = true
 end
 
@@ -132,7 +141,7 @@ if opts.verbose
     fprintf('  Right eye: %d/%d frames visible\n', n_visible_R, num_stim_frames);
 end
 
-% Left eye (one array per disparity condition): left_pixel = left_px(deg + D_deg), in [-W, 0]
+% Left eye (one array per disparity condition): left_pixel = left_px(deg - D_deg), in [-W, 0]
 % Ball is visible when left_pixel in [-W, 0]; pass -left_pixel to make_ball_frame (flips direction)
 % Monocular ignores disparity, so only the D=0 set is built (index 1).
 if opts.monocular
@@ -149,7 +158,7 @@ for disparity_idx = 1:n_left_sets
     left_eye_payloads_by_disparity{disparity_idx} = cell(1, num_stim_frames);
 
     for frame_idx = 1:num_stim_frames
-        left_pixel_position = left_px(angles(frame_idx) + D_deg);
+        left_pixel_position = left_px(angles(frame_idx) - D_deg);
         if left_pixel_position >= -opts.W && left_pixel_position <= 0
             ball_frame = make_ball_frame(-left_pixel_position, opts.stim_size, ...
                                          opts.W, opts.H, opts.rcycles, opts.tcycles, ...
@@ -164,7 +173,7 @@ for disparity_idx = 1:n_left_sets
     end
 
     if opts.verbose
-        left_positions = left_px(angles + D_deg);
+        left_positions = left_px(angles - D_deg);
         n_visible_L    = sum(left_positions >= -opts.W & left_positions <= 0);
         fprintf('  Left eye (disp=%+.1f deg): %d/%d frames visible\n', ...
             D_deg, n_visible_L, num_stim_frames);
@@ -290,6 +299,50 @@ stim_log.left_eye_end_px     = nan(1, total_trials);
 stim_log.right_eye_start_px  = nan(1, total_trials);
 stim_log.right_eye_end_px    = nan(1, total_trials);
 
+% === DISPARITY SNAPSHOT (sanity check) ===
+% One-time montage at angle ~= snapshot_angle: for each disparity condition, show the actual
+% rendered left/right eye frames. Right eye is shared across conditions, so its column is identical
+% every row while the left ball shifts with disparity -- that is the thing to eyeball. Reuses the
+% precomputed frames, so no hardware and no re-rendering.
+show_snapshot = opts.snapshot && ~opts.monocular && ...
+                (numel(opts.disparities) > 1 || any(opts.disparities ~= 0));
+if show_snapshot
+    [~, snap_idx] = min(abs(angles - opts.snapshot_angle));
+    snap_angle    = angles(snap_idx);            % actual nearest sampled angle
+    frame_R       = right_eye_frames{snap_idx};  % right eye shared across all disparities
+    rpx           = right_px(snap_angle);
+
+    % Fixed per-eye visual-angle ruler: tick column for angle a is where that eye's fit renders a
+    % (right: right_px(a); left displayed col: W+1+left_px(a) after the display rot90). The ruler is
+    % independent of disparity, so the right ball stays on its tick while the left ball slides along
+    % the ticks as D changes -> disparity = (tick under left ball) - (tick under right ball).
+    tick_step   = opts.snapshot_tick_deg;
+    tick_angles = ceil(opts.start_deg/tick_step)*tick_step : tick_step : floor(opts.end_deg/tick_step)*tick_step;
+    R_cols = right_px(tick_angles);              vR = R_cols >= 0.5 & R_cols <= opts.W + 0.5;
+    L_cols = opts.W + 1 + left_px(tick_angles);  vL = L_cols >= 0.5 & L_cols <= opts.W + 0.5;
+
+    figure('Name', 'Disparity Snapshot', 'NumberTitle', 'off');
+    for k = 1:n_disp
+        D       = opts.disparities(k);
+        frame_L = left_eye_frames_by_disparity{k}{snap_idx};
+        lpx     = left_px(snap_angle - D);
+        if lpx < -opts.W || lpx > 0, off_lbl = ' (off)'; else, off_lbl = ''; end
+        if D < 0, sense = ' crossed/near'; elseif D > 0, sense = ' uncrossed/far'; else, sense = ' zero'; end
+
+        ax = subplot(n_disp, 2, (k-1)*2 + 1);
+        imshow(rot90(frame_L, 1), 'Parent', ax);
+        draw_angle_ruler(ax, L_cols(vL), tick_angles(vL), opts.H);
+        title(ax, sprintf('D=%+.1f%s  Left px=%.1f%s', D, sense, lpx, off_lbl));
+
+        ax = subplot(n_disp, 2, (k-1)*2 + 2);
+        imshow(rot90(frame_R, -1), 'Parent', ax);
+        draw_angle_ruler(ax, R_cols(vR), tick_angles(vR), opts.H);
+        title(ax, sprintf('Right px=%.1f', rpx));
+    end
+    sgtitle(sprintf('Disparity snapshots @ angle \\approx %.1f\\circ  |  ticks = visual angle (deg)  |  D<0 crossed (left nasal), D>0 uncrossed (left temporal)', snap_angle));
+    drawnow;
+end
+
 if opts.verbose && ~opts.preview
     fprintf('Press Enter when ready...\n');
     pause();
@@ -353,8 +406,8 @@ for trial = 1:total_trials
 
     % Pixel endpoints for this trial (idle eye in monocular stays NaN)
     if left_on
-        stim_log.left_eye_start_px(trial) = left_px(opts.start_deg + D_deg);
-        stim_log.left_eye_end_px(trial)   = left_px(opts.end_deg   + D_deg);
+        stim_log.left_eye_start_px(trial) = left_px(opts.start_deg - D_deg);
+        stim_log.left_eye_end_px(trial)   = left_px(opts.end_deg   - D_deg);
     end
     if right_on
         stim_log.right_eye_start_px(trial) = right_px(opts.start_deg);
@@ -554,6 +607,26 @@ function frame = make_ball_frame(x_pos, stim_size, W, H, rcycles, tcycles, bw, b
     bx2 = bx1 + (x2 - x1);
 
     frame(y1:y2, x1:x2, :) = ball_rgb(by1:by2, bx1:bx2, :);
+end
+
+%% --- Angle ruler overlay for the disparity snapshot ---
+function draw_angle_ruler(ax, cols, labels_deg, H)
+% Draw dashed vertical guide lines at the given displayed columns (one per reference visual angle),
+% spanning the full image height, and label them with readable numeric ticks along the x-axis
+% (imshow turns the axis off, so re-enable just the x-axis). cols must be ascending.
+    hold(ax, 'on');
+    for t = 1:numel(cols)
+        plot(ax, [cols(t) cols(t)], [0.5, H + 0.5], '--', 'Color', [1 1 0], 'LineWidth', 0.5);
+    end
+    hold(ax, 'off');
+    if isempty(cols), return; end
+    ax.XAxis.Visible = 'on';
+    ax.XTick         = cols;
+    ax.XTickLabel    = string(labels_deg);
+    ax.YTick         = [];
+    ax.TickLength    = [0 0];
+    ax.FontSize      = 7;
+    ax.XColor        = [0.35 0.35 0.35];
 end
 
 %% --- Frame rotation for each eye ---

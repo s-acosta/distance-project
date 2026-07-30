@@ -51,13 +51,13 @@ class DisparityDevice(GogglesDevice):
         Screen pixel for a visual angle in one eye, via that eye's deg->pixel fit.
 
         Disparity shifts the **left** eye's angle before conversion (matching the
-        stimulus: ``left_px = left_slope*(deg + disparity) + left_intercept``); the
+        stimulus: ``left_px = left_slope*(deg - disparity) + left_intercept``); the
         right eye is unaffected by disparity.
         """
         angle = np.asarray(angle, float)
         if eye == 'left':
             slope, intercept = self.left_fit
-            return slope * (angle + disparity) + intercept
+            return slope * (angle - disparity) + intercept
         elif eye == 'right':
             slope, intercept = self.right_fit
             return slope * angle + intercept

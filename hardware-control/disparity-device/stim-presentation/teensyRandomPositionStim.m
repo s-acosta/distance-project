@@ -22,11 +22,11 @@ function Stimdata = teensyRandomPositionStim(opts)
 %   Stimdata.repeats        scalar                    - Repeats per position
 
 arguments
-    opts.positions (1,:) double = linspace(20, 220, 8)  % x positions (pixels)
+    opts.positions (1,:) double = 50  % x positions (pixels)
     opts.stim_size (1,1) double = 30                      % ball diameter (pixels)
     opts.rcycles (1,1) double = 1                          % radial checkerboard cycles
     opts.tcycles (1,1) double = 2                          % angular checkerboard cycles
-    opts.PORT (1,1) string = "COM5"
+    opts.PORT (1,1) string = "COM3"
     opts.baud (1,1) double = 115200
     opts.H (1,1) double = 240
     opts.W (1,1) double = 240

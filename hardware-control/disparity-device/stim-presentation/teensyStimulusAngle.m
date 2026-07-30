@@ -1,4 +1,4 @@
-function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope, right_intercept, opts)
+function stim_log = teensyStimulusAngle(opts)
 % Present a binocular sweep specified in VISUAL ANGLE, mapped to per-eye screen
 % pixels through independent degree->pixel fits (one slope/intercept per eye).
 %
@@ -31,14 +31,16 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 % ~30-60 ms serial desync of sequential USB-CDC transfers.
 %
 % Usage:
-%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4)
-%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'disparities', [-10 0 10])  % snapshot shows automatically
-%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'preview', true)
-%   stim_log = teensyStimulusAngle(0.64, -44.7, 0.88, 64.4, 'monocular', true)
+%   stim_log = teensyStimulusAngle('left_slope', 0.64, 'left_intercept', -44.7, ...
+%                                   'right_slope', 0.88, 'right_intercept', 64.4)
+%   stim_log = teensyStimulusAngle('disparities', [-10 0 10])  % uses default fits; snapshot shows automatically
+%   stim_log = teensyStimulusAngle('preview', true)
+%   stim_log = teensyStimulusAngle('monocular', true)
 %
-% Required args:
-%   left_slope, left_intercept   - left-eye deg->pixel fit
-%   right_slope, right_intercept - right-eye deg->pixel fit
+% Fit parameters (opts, all optional — defaults below are placeholders, override
+% with your recovered calibration):
+%   opts.left_slope, opts.left_intercept   - left-eye deg->pixel fit
+%   opts.right_slope, opts.right_intercept - right-eye deg->pixel fit
 %
 % Returns:
 %   stim_log.trial_disparity_deg(i) - Left-eye disparity for trial i (degrees)
@@ -51,16 +53,16 @@ function stim_log = teensyStimulusAngle(left_slope, left_intercept, right_slope,
 %   stim_log.frame_times{i}         - Frame timestamps for trial i
 
 arguments
-    left_slope      (1,1) double
-    left_intercept  (1,1) double
-    right_slope     (1,1) double
-    right_intercept (1,1) double
+    opts.left_slope      (1,1) double = 0.76
+    opts.left_intercept  (1,1) double = -52
+    opts.right_slope     (1,1) double = 0.76
+    opts.right_intercept (1,1) double = 55
     opts.start_deg     (1,1) double = -30        % Fixed sweep start (deg)
-    opts.end_deg       (1,1) double = 60         % Fixed sweep end (deg)
+    opts.end_deg       (1,1) double = 30         % Fixed sweep end (deg)
     opts.stim_size     (1,1) double = 30
     opts.disparities   (1,:) double = 0          % LEFT-eye disparity offsets (degrees); ignored if monocular
     opts.monocular     (1,1) logical = false     % One eye per trial (other gray), alternating eyes; disparity ignored (D=0)
-    opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
+    opts.stim_duration (1,1) double = 4.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
     opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
     opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard
     opts.PORT          (1,1) string = "COM6"     % Right eye serial port
@@ -100,8 +102,8 @@ total_dur       = trial_dur * total_trials;
 angles = linspace(opts.start_deg, opts.end_deg, num_stim_frames);
 
 % deg -> pixel maps (right eye has no disparity; left eye disparity added at use)
-right_px = @(deg) right_slope * deg + right_intercept;
-left_px  = @(deg) left_slope  * deg + left_intercept;
+right_px = @(deg) opts.right_slope * deg + opts.right_intercept;
+left_px  = @(deg) opts.left_slope  * deg + opts.left_intercept;
 
 % === PRE-COMPUTE FRAMES ===
 if opts.verbose
@@ -109,7 +111,7 @@ if opts.verbose
     fprintf('  Angle sweep: %.1f to %.1f deg | %d frames at %d fps (%.1fs)\n', ...
         opts.start_deg, opts.end_deg, num_stim_frames, opts.target_fps, stim_duration);
     fprintf('  Fits: left px = %.3f*deg %+.2f | right px = %.3f*deg %+.2f\n', ...
-        left_slope, left_intercept, right_slope, right_intercept);
+        opts.left_slope, opts.left_intercept, opts.right_slope, opts.right_intercept);
 end
 
 % Gray images (rotated per eye for consistency with ball frames)
@@ -274,8 +276,8 @@ if opts.monocular
 else
     stim_log.mode = 'binocular';
 end
-stim_log.left_fit            = [left_slope, left_intercept];
-stim_log.right_fit           = [right_slope, right_intercept];
+stim_log.left_fit            = [opts.left_slope, opts.left_intercept];
+stim_log.right_fit           = [opts.right_slope, opts.right_intercept];
 stim_log.start_deg           = opts.start_deg;
 stim_log.end_deg             = opts.end_deg;
 stim_log.angles              = angles;

@@ -19,6 +19,10 @@ class CellVisualizer(CellVizBase):
     """
     Per-cell plots for a disparity (left/right eye) session.
 
+    Pass a precomputed ``stats_df`` (from ``SessionAnalyzer.analyze_session_stats``)
+    to reuse its cached ``left_mean_corr``/``right_mean_corr`` instead of
+    recomputing split-half reliability per cell; omitted, it's computed live.
+
     Examples
     --------
     >>> from src.data.MonocularDevice import MonocularDevice
@@ -32,9 +36,18 @@ class CellVisualizer(CellVizBase):
     EYE_COLOR = {'left': 'red', 'right': 'blue'}
     EYE_CMAP = {'left': 'Reds', 'right': 'Blues'}
 
-    def __init__(self, device):
+    def __init__(self, device, stats_df=None):
         super().__init__(device)
         self.analyzer = CellAnalyzer(device)
+        self.stats_df = stats_df
+
+    def _mean_corr(self, cell, eye):
+        """That eye's mean split-half corr for a cell: from ``stats_df`` if cached, else live."""
+        if self.stats_df is not None:
+            row = self.stats_df.loc[self.stats_df['cell'] == cell]
+            if len(row):
+                return float(row[f'{eye}_mean_corr'].iloc[0])
+        return self.analyzer.analyze_cell_reliability(cell, eye=eye)['mean_corr']
 
     def make_comparison_plot(self, cell, fig=None):
         """
@@ -58,6 +71,9 @@ class CellVisualizer(CellVizBase):
         left_mean, left_sem = self.device.get_all_traces(cell, eye='left', mean_trace=True)
         right_mean, right_sem = self.device.get_all_traces(cell, eye='right', mean_trace=True)
 
+        left_corr = self._mean_corr(cell, 'left')
+        right_corr = self._mean_corr(cell, 'right')
+
         own_fig = fig is None
         if own_fig:
             fig = plt.figure(figsize=(22, 5))
@@ -67,14 +83,14 @@ class CellVisualizer(CellVizBase):
         ax.pcolor(left_traces, vmin=vmin, vmax=vmax, cmap=self.EYE_CMAP['left'])
         ax.set_xlabel('Time (frames)', fontsize=20)
         ax.set_ylabel('Trial', fontsize=20)
-        ax.set_title('Left Eye', fontsize=28)
+        ax.set_title(f'Left Eye (corr: {left_corr:.2f})', fontsize=24)
         ax.tick_params(axis='both', which='major', labelsize=18)
 
         ax = axes[1]
         ax.pcolor(right_traces, vmin=vmin, vmax=vmax, cmap=self.EYE_CMAP['right'])
         ax.set_xlabel('Time (frames)', fontsize=20)
         ax.set_ylabel('Trial', fontsize=20)
-        ax.set_title('Right Eye', fontsize=28)
+        ax.set_title(f'Right Eye (corr: {right_corr:.2f})', fontsize=24)
         ax.tick_params(axis='both', which='major', labelsize=18)
 
         left_rf_idx, _ = self.device.find_rf_position(cell, eye='left')
@@ -105,25 +121,30 @@ class CellVisualizer(CellVizBase):
 
         # --- panel 4: tuning vs visual angle (shared axis for both eyes) ---
         ax = axes[3]
-        ang = self.device.get_angle_range()
+        if self.device.has_angle_range:
+            ang = self.device.get_angle_range()
 
-        ax.fill_between(ang, left_mean - left_sem, left_mean + left_sem, alpha=0.2, color='red')
-        ax.plot(ang, left_mean, linewidth=2, color='red')
-        ax.fill_between(ang, right_mean - right_sem, right_mean + right_sem, alpha=0.2, color='blue')
-        ax.plot(ang, right_mean, linewidth=2, color='blue')
+            ax.fill_between(ang, left_mean - left_sem, left_mean + left_sem, alpha=0.2, color='red')
+            ax.plot(ang, left_mean, linewidth=2, color='red')
+            ax.fill_between(ang, right_mean - right_sem, right_mean + right_sem, alpha=0.2, color='blue')
+            ax.plot(ang, right_mean, linewidth=2, color='blue')
 
-        ax.set_xlim(ang[0], ang[-1])
-        ax.set_ylim(vmin, vmax)
-        ax.set_xlabel('Angle (deg)', fontsize=24)
-        ax.set_ylabel('Activity (z-score)', fontsize=20)
-        ax.set_title('Mean Trace ± SEM (deg)', fontsize=24)
-        ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.legend(
-            handles=[ax.lines[0], ax.lines[1]],
-            labels=[f'Left Eye (RF: {ang[left_rf_idx]:.1f}°)',
-                    f'Right Eye (RF: {ang[right_rf_idx]:.1f}°)'],
-            fontsize=16, loc='best', frameon=False,
-        )
+            ax.set_xlim(ang[0], ang[-1])
+            ax.set_ylim(vmin, vmax)
+            ax.set_xlabel('Angle (deg)', fontsize=24)
+            ax.set_ylabel('Activity (z-score)', fontsize=20)
+            ax.set_title('Mean Trace ± SEM (deg)', fontsize=24)
+            ax.tick_params(axis='both', which='major', labelsize=20)
+            ax.legend(
+                handles=[ax.lines[0], ax.lines[1]],
+                labels=[f'Left Eye (RF: {ang[left_rf_idx]:.1f}°)',
+                        f'Right Eye (RF: {ang[right_rf_idx]:.1f}°)'],
+                fontsize=16, loc='best', frameon=False,
+            )
+        else:
+            ax.axis('off')
+            ax.text(0.5, 0.5, 'No angle calibration\n(legacy pixel-format session)',
+                    ha='center', va='center', fontsize=16, transform=ax.transAxes)
 
         if own_fig:
             fig.suptitle(f'Cell {cell}', fontsize=20)

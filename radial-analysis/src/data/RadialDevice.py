@@ -107,8 +107,8 @@ class RadialDevice:
 
         container = self._load_stimulus_container()
 
-        
-        locals_dict = import_vars_from_matlab(container, 'distance_stim')
+        structure_name = 'distance_stim' if 'distance_stim' in container else 'distance_stimulus'
+        locals_dict = import_vars_from_matlab(container, structure_name)
 
         self.distances_showed = locals_dict['distances']
         self.time_per_trial = locals_dict['time_per_trial']

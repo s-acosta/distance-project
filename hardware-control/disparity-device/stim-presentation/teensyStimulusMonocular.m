@@ -7,13 +7,27 @@ function stim_log = teensyStimulusMonocular(opts)
 % each eye gets exactly n_repeats trials, never the same eye more than
 % twice in a row.
 %
+% Set opts.elevations to repeat the same azimuth sweep at multiple fixed
+% vertical (y) positions instead of just the screen's vertical center --
+% e.g. to compare each eye's preferred elevation. One left/right video pair
+% is generated per elevation; n_repeats then applies PER (eye, elevation)
+% condition, so total trials = 2 * n_repeats * numel(elevations). Within
+% each eye's own trials, elevation order is shuffled (fixed seed) so it
+% isn't confounded with time/adaptation drift across the session. Default
+% (opts.elevations = []) is unchanged from before: a single sweep at the
+% vertical center, total trials = 2 * n_repeats.
+%
 % Usage:
 %   stim_log = teensyStimulusMonocular()
 %   stim_log = teensyStimulusMonocular('n_repeats', 4, 'stim_size', 20)
 %   stim_log = teensyStimulusMonocular('preview', true)
+%   stim_log = teensyStimulusMonocular('elevations', [60 90 120 150 180], 'n_repeats', 15)
 %
 % Returns:
-%   stim_log.eye_order(i)     - Which eye was active on trial i (1=right, 2=left)
+%   stim_log.eye_order(i)            - Which eye was active on trial i (1=right, 2=left)
+%   stim_log.elevations               - Swept y positions (px); empty if not used
+%   stim_log.trial_elevation_idx(i)   - Elevation-condition index for trial i (1 if not used)
+%   stim_log.trial_elevation_px(i)    - Elevation (px) for trial i (NaN if not used)
 %   stim_log.trial_start(i)   - Start time of trial i (seconds)
 %   stim_log.pre_start(i)     - Start of PRE phase
 %   stim_log.stim_start(i)    - Start of stimulus video
@@ -27,12 +41,13 @@ arguments
     opts.left_start  (1,1) double  = 120      % Left eye start position
     opts.left_end    (1,1) double  = 0        % Left eye end position (0=front)
     opts.stim_size   (1,1) double  = 30       % Stimulus circle diameter (pixels)
+    opts.elevations  (1,:) double  = []       % Fixed y positions (px) to repeat the sweep at (default: single sweep at vertical center, i.e. current behavior)
     opts.PORT        (1,1) string  = "COM6"
     opts.PORT_left   (1,1) string  = "COM5"
     opts.baud        (1,1) double  = 115200
     opts.H           (1,1) double  = 240
     opts.W           (1,1) double  = 240
-    opts.n_repeats   (1,1) double  = 20        % Trials per eye (total = 2 * n_repeats)
+    opts.n_repeats   (1,1) double  = 20        % Trials per eye (or per eye-elevation condition if opts.elevations is set)
     opts.pre_time    (1,1) double  = 2.0
     opts.post_time   (1,1) double  = 3.0
     opts.target_fps  (1,1) double  = 10
@@ -48,88 +63,130 @@ arguments
     opts.window_size (1,1) double  = 240
 end
 
-total_trials   = 2 * opts.n_repeats;
+has_elev = ~isempty(opts.elevations);
+n_elev   = max(1, numel(opts.elevations));
+
+total_trials   = 2 * opts.n_repeats * n_elev;
 frame_interval = 1 / opts.target_fps;
 
-% === GENERATE VIDEOS ===
-func_dir   = fileparts(mfilename('fullpath'));
-right_name = fullfile(func_dir, sprintf('stim_right_x%d_to_%d_size%d.mp4', ...
-    round(opts.right_start), round(opts.right_end), round(opts.stim_size)));
-left_name  = fullfile(func_dir, sprintf('stim_left_x%d_to_%d_size%d.mp4', ...
-    round(opts.left_start),  round(opts.left_end),  round(opts.stim_size)));
+% === GENERATE VIDEOS (one left/right pair per elevation; single pair if opts.elevations is empty) ===
+func_dir    = fileparts(mfilename('fullpath'));
+right_names = cell(1, n_elev);
+left_names  = cell(1, n_elev);
 
 if opts.verbose
     fprintf('=== Generating stimulus videos ===\n');
 end
 
-if ~isfile(right_name)
-    if opts.verbose
-        fprintf('  Right eye: x=%d -> %d\n', round(opts.right_start), round(opts.right_end));
+for k = 1:n_elev
+    if has_elev
+        elev_px  = opts.elevations(k);
+        elev_tag = sprintf('_y%d', round(elev_px));
+        elev_opt = {'elevation', elev_px};
+    else
+        elev_tag = '';
+        elev_opt = {};
     end
-    generate_leftright_stim(opts.right_start, opts.right_end, opts.stim_size, ...
-        opts.duration, opts.frame_rate, ...
-        'output_name',  right_name, ...
-        'window_size',  opts.window_size, ...
-        'rcycles',      opts.rcycles, ...
-        'tcycles',      opts.tcycles);
-else
-    if opts.verbose
-        fprintf('  Right video already exists, skipping: %s\n', right_name);
+
+    right_names{k} = fullfile(func_dir, sprintf('stim_right_x%d_to_%d_size%d%s.mp4', ...
+        round(opts.right_start), round(opts.right_end), round(opts.stim_size), elev_tag));
+    left_names{k}  = fullfile(func_dir, sprintf('stim_left_x%d_to_%d_size%d%s.mp4', ...
+        round(opts.left_start),  round(opts.left_end),  round(opts.stim_size), elev_tag));
+
+    if ~isfile(right_names{k})
+        if opts.verbose
+            if has_elev
+                fprintf('  Right eye: x=%d -> %d @ y=%d\n', ...
+                    round(opts.right_start), round(opts.right_end), round(elev_px));
+            else
+                fprintf('  Right eye: x=%d -> %d\n', round(opts.right_start), round(opts.right_end));
+            end
+        end
+        generate_leftright_stim(opts.right_start, opts.right_end, opts.stim_size, ...
+            opts.duration, opts.frame_rate, ...
+            'output_name',  right_names{k}, ...
+            'window_size',  opts.window_size, ...
+            'rcycles',      opts.rcycles, ...
+            'tcycles',      opts.tcycles, ...
+            elev_opt{:});
+    elseif opts.verbose
+        fprintf('  Right video already exists, skipping: %s\n', right_names{k});
+    end
+
+    if ~isfile(left_names{k})
+        if opts.verbose
+            if has_elev
+                fprintf('  Left eye:  x=%d -> %d @ y=%d\n', ...
+                    round(opts.left_start), round(opts.left_end), round(elev_px));
+            else
+                fprintf('  Left eye:  x=%d -> %d\n', round(opts.left_start), round(opts.left_end));
+            end
+        end
+        generate_leftright_stim(opts.left_start, opts.left_end, opts.stim_size, ...
+            opts.duration, opts.frame_rate, ...
+            'output_name',  left_names{k}, ...
+            'window_size',  opts.window_size, ...
+            'rcycles',      opts.rcycles, ...
+            'tcycles',      opts.tcycles, ...
+            elev_opt{:});
+    elseif opts.verbose
+        fprintf('  Left video already exists, skipping: %s\n', left_names{k});
     end
 end
 
-if ~isfile(left_name)
-    if opts.verbose
-        fprintf('  Left eye:  x=%d -> %d\n', round(opts.left_start), round(opts.left_end));
-    end
-    generate_leftright_stim(opts.left_start, opts.left_end, opts.stim_size, ...
-        opts.duration, opts.frame_rate, ...
-        'output_name',  left_name, ...
-        'window_size',  opts.window_size, ...
-        'rcycles',      opts.rcycles, ...
-        'tcycles',      opts.tcycles);
-else
-    if opts.verbose
-        fprintf('  Left video already exists, skipping: %s\n', left_name);
-    end
-end
-
-% === PRE-COMPUTE FRAMES ===
+% === PRE-COMPUTE FRAMES (per elevation) ===
 if opts.verbose
     fprintf('\n=== Pre-computing frames ===\n');
 end
 
-vR = VideoReader(right_name);
-vL = VideoReader(left_name);
-vid_duration = vR.Duration;
+frames_R     = cell(1, n_elev);
+frames_L     = cell(1, n_elev);
+payloads_R   = cell(1, n_elev);
+payloads_L   = cell(1, n_elev);
+n_frames_R   = zeros(1, n_elev);
+n_frames_L   = zeros(1, n_elev);
+vid_duration = NaN;
 
-raw_R = {}; vR.CurrentTime = 0;
-while hasFrame(vR)
-    rgb = readFrame(vR);
-    if size(rgb,1) ~= opts.H || size(rgb,2) ~= opts.W
-        rgb = imresize(rgb, [opts.H opts.W], 'nearest');
+for k = 1:n_elev
+    vR = VideoReader(right_names{k});
+    vL = VideoReader(left_names{k});
+    if isnan(vid_duration)
+        vid_duration = vR.Duration;   % same for every elevation (same opts.duration)
     end
-    raw_R{end+1} = rgb; %#ok<AGROW>
-end
 
-raw_L = {}; vL.CurrentTime = 0;
-while hasFrame(vL)
-    rgb = readFrame(vL);
-    if size(rgb,1) ~= opts.H || size(rgb,2) ~= opts.W
-        rgb = imresize(rgb, [opts.H opts.W], 'nearest');
+    raw_R = {}; vR.CurrentTime = 0;
+    while hasFrame(vR)
+        rgb = readFrame(vR);
+        if size(rgb,1) ~= opts.H || size(rgb,2) ~= opts.W
+            rgb = imresize(rgb, [opts.H opts.W], 'nearest');
+        end
+        raw_R{end+1} = rgb; %#ok<AGROW>
     end
-    raw_L{end+1} = rgb; %#ok<AGROW>
-end
 
-frames_R   = process_frames(raw_R, 'right', opts.brightness);
-frames_L   = process_frames(raw_L, 'left',  opts.brightness);
-payloads_R = cellfun(@rgb565_payload, frames_R, 'UniformOutput', false);
-payloads_L = cellfun(@rgb565_payload, frames_L, 'UniformOutput', false);
-n_frames_R = length(frames_R);
-n_frames_L = length(frames_L);
+    raw_L = {}; vL.CurrentTime = 0;
+    while hasFrame(vL)
+        rgb = readFrame(vL);
+        if size(rgb,1) ~= opts.H || size(rgb,2) ~= opts.W
+            rgb = imresize(rgb, [opts.H opts.W], 'nearest');
+        end
+        raw_L{end+1} = rgb; %#ok<AGROW>
+    end
 
-if opts.verbose
-    fprintf('  Right eye: %d frames | Left eye: %d frames\n', n_frames_R, n_frames_L);
+    frames_R{k}   = process_frames(raw_R, 'right', opts.brightness);
+    frames_L{k}   = process_frames(raw_L, 'left',  opts.brightness);
+    payloads_R{k} = cellfun(@rgb565_payload, frames_R{k}, 'UniformOutput', false);
+    payloads_L{k} = cellfun(@rgb565_payload, frames_L{k}, 'UniformOutput', false);
+    n_frames_R(k) = length(frames_R{k});
+    n_frames_L(k) = length(frames_L{k});
+
+    if opts.verbose
+        if has_elev
+            fprintf('  Elevation %d/%d (y=%d): right %d frames | left %d frames\n', ...
+                k, n_elev, round(opts.elevations(k)), n_frames_R(k), n_frames_L(k));
+        else
+            fprintf('  Right eye: %d frames | Left eye: %d frames\n', n_frames_R(k), n_frames_L(k));
+        end
+    end
 end
 
 gray_img_R     = rotate_for_eye(uint8(ones(opts.H, opts.W, 3) * round(127 * opts.brightness)), 'right');
@@ -138,8 +195,9 @@ gray_payload_R = rgb565_payload(gray_img_R);
 gray_payload_L = rgb565_payload(gray_img_L);
 
 % === EYE SEQUENCE: alternating pairs [1,2],[2,1],[1,2],... ===
+n_pairs = total_trials / 2;
 eye_seq = zeros(1, total_trials);
-for p = 1:opts.n_repeats
+for p = 1:n_pairs
     idx = (p-1)*2 + 1;
     if mod(p, 2) == 1
         eye_seq(idx:idx+1) = [1, 2];
@@ -148,6 +206,21 @@ for p = 1:opts.n_repeats
     end
 end
 % eye_seq: 1=right active, 2=left active
+
+% === ELEVATION SEQUENCE: each eye sees every elevation n_repeats times, shuffled
+% within that eye's own trials (fixed seed) so elevation order isn't confounded with
+% time/adaptation drift across the session. No-op (all trials -> condition 1) if
+% opts.elevations is empty.
+elev_idx = ones(1, total_trials);
+if has_elev
+    rng(0);
+    for eye_id = 1:2
+        trial_positions = find(eye_seq == eye_id);
+        order = repelem(1:n_elev, opts.n_repeats);
+        order = order(randperm(numel(order)));
+        elev_idx(trial_positions) = order;
+    end
+end
 
 trial_dur = opts.pre_time + vid_duration + opts.post_time;
 total_dur  = trial_dur * total_trials;
@@ -160,9 +233,17 @@ if opts.verbose
         round(opts.stim_size), opts.duration, round(opts.frame_rate));
     fprintf('Trial structure: PRE %.1fs | STIM %.2fs | POST %.1fs (%.2fs total)\n', ...
         opts.pre_time, vid_duration, opts.post_time, trial_dur);
-    fprintf('n_repeats per eye: %d | Total trials: %d\n', opts.n_repeats, total_trials);
+    if has_elev
+        fprintf('Elevations (px): %s\n', mat2str(opts.elevations));
+        fprintf('n_repeats per (eye, elevation): %d | Total trials: %d\n', opts.n_repeats, total_trials);
+    else
+        fprintf('n_repeats per eye: %d | Total trials: %d\n', opts.n_repeats, total_trials);
+    end
     fprintf('Total experiment: %.1f s (%.1f min)\n', total_dur, total_dur/60);
     fprintf('Eye sequence (1=R,2=L): %s\n', mat2str(eye_seq));
+    if has_elev
+        fprintf('Elevation index per trial: %s\n', mat2str(elev_idx));
+    end
     fprintf('Brightness: %.2f\n', opts.brightness);
     fprintf('DAQ triggering: %s\n', string(opts.DAQ_flag));
     if opts.DAQ_flag, fprintf('Scope: %s\n', opts.scope); end
@@ -209,6 +290,13 @@ stim_log = struct();
 stim_log.parameters  = opts;
 stim_log.stim_duration = vid_duration;
 stim_log.eye_order     = eye_seq;
+stim_log.elevations          = opts.elevations;   % swept y positions (px); empty if not used
+stim_log.trial_elevation_idx = elev_idx;           % 1..n_elev index per trial (all 1 if not used)
+if has_elev
+    stim_log.trial_elevation_px = opts.elevations(elev_idx);   % actual y pixel per trial
+else
+    stim_log.trial_elevation_px = nan(1, total_trials);
+end
 stim_log.trial_start = zeros(1, total_trials);
 stim_log.pre_start   = zeros(1, total_trials);
 stim_log.stim_start  = zeros(1, total_trials);
@@ -241,18 +329,24 @@ end
 
 % === MAIN TRIAL LOOP ===
 for trial = 1:total_trials
-    active_eye = eye_seq(trial);   % 1=right, 2=left
+    active_eye  = eye_seq(trial);    % 1=right, 2=left
+    active_elev = elev_idx(trial);   % index into the per-elevation frame/payload cells
 
     if opts.verbose
         eye_label = 'right'; if active_eye == 2, eye_label = 'left'; end
-        fprintf('--- Trial %d/%d [active eye: %s] ---\n', trial, total_trials, eye_label);
+        if has_elev
+            fprintf('--- Trial %d/%d [active eye: %s, elevation: %d px] ---\n', ...
+                trial, total_trials, eye_label, round(opts.elevations(active_elev)));
+        else
+            fprintf('--- Trial %d/%d [active eye: %s] ---\n', trial, total_trials, eye_label);
+        end
     end
 
     % Resolve assets for active/idle eye
     if active_eye == 1   % right eye active
-        stim_payloads = payloads_R;
-        stim_frames   = frames_R;
-        n_frames      = n_frames_R;
+        stim_payloads = payloads_R{active_elev};
+        stim_frames   = frames_R{active_elev};
+        n_frames      = n_frames_R(active_elev);
         if ~opts.preview
             s_stim = s_right;  s_idle = s_left;
             gray_payload_idle = gray_payload_L;
@@ -260,9 +354,9 @@ for trial = 1:total_trials
         active_gray_img = gray_img_R;
         idle_gray_img   = gray_img_L;
     else                 % left eye active
-        stim_payloads = payloads_L;
-        stim_frames   = frames_L;
-        n_frames      = n_frames_L;
+        stim_payloads = payloads_L{active_elev};
+        stim_frames   = frames_L{active_elev};
+        n_frames      = n_frames_L(active_elev);
         if ~opts.preview
             s_stim = s_left;   s_idle = s_right;
             gray_payload_idle = gray_payload_R;

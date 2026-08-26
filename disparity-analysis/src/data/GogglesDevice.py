@@ -283,13 +283,33 @@ class GogglesDevice:
             rng = -rng
         return rng
 
+    @property
+    def has_angle_range(self):
+        """Whether this session's stimulus log has start_deg/end_deg (teensyStimulusAngle only)."""
+        return 'start_deg' in self.parameters and 'end_deg' in self.parameters
+
     def get_angle_range(self):
         """
         Per-frame visual angle (deg) across the sweep (length == on_length).
 
         Shared by both eyes: they sweep the same ``start_deg``..``end_deg`` range,
         just mapped onto each eye's screen by its own pixel fit.
+
+        Only available for sessions recorded with ``teensyStimulusAngle`` — legacy
+        pixel-format sessions (``teensyStimulusMonocular``/``...Both``/plain
+        ``goggles_left``) never logged a degree sweep at acquisition time, and it
+        can't be recovered after the fact. Check :attr:`has_angle_range` first, or
+        use :meth:`get_signed_screen_range`/:meth:`get_screen_range` (pixels), which
+        work for every format.
         """
+        if not self.has_angle_range:
+            raise ValueError(
+                "This session has no start_deg/end_deg in its stimulus parameters "
+                "-- it predates the angle-calibrated stimulus format "
+                "(teensyStimulusAngle) and never logged a degree sweep. Use "
+                "get_signed_screen_range()/get_screen_range() (pixels) instead, or "
+                "check `device.has_angle_range` before calling this."
+            )
         return np.linspace(self.parameters['start_deg'], self.parameters['end_deg'],
                            self.on_length)
 

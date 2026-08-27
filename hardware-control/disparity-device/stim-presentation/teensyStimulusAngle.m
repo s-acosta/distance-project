@@ -54,15 +54,15 @@ function stim_log = teensyStimulusAngle(opts)
 
 arguments
     opts.left_slope      (1,1) double = 0.76
-    opts.left_intercept  (1,1) double = -52
+    opts.left_intercept  (1,1) double = -55
     opts.right_slope     (1,1) double = 0.76
     opts.right_intercept (1,1) double = 55
     opts.start_deg     (1,1) double = -30        % Fixed sweep start (deg)
     opts.end_deg       (1,1) double = 30         % Fixed sweep end (deg)
     opts.stim_size     (1,1) double = 30
-    opts.disparities   (1,:) double = 0          % LEFT-eye disparity offsets (degrees); ignored if monocular
+    opts.disparities   (1,:) double = [-12 -8 -4 0 4 8 12]          % LEFT-eye disparity offsets (degrees); ignored if monocular
     opts.monocular     (1,1) logical = false     % One eye per trial (other gray), alternating eyes; disparity ignored (D=0)
-    opts.stim_duration (1,1) double = 4.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
+    opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
     opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
     opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard
     opts.PORT          (1,1) string = "COM6"     % Right eye serial port
@@ -70,14 +70,14 @@ arguments
     opts.baud          (1,1) double = 115200
     opts.H             (1,1) double = 240
     opts.W             (1,1) double = 240
-    opts.n_repeats     (1,1) double = 12          % Repeats per disparity condition
+    opts.n_repeats     (1,1) double = 20          % Repeats per disparity condition
     opts.pre_time      (1,1) double = 2.0        % Gray screen before stim (s)
     opts.post_time     (1,1) double = 1.0        % Gray screen after stim (s)
     opts.target_fps    (1,1) double = 10         % Serial playback FPS
     opts.brightness    (1,1) double = 0.6        % Luminance scale (0-1)
     opts.bw            (1,1) logical = false     % Black background, solid white ball
     opts.shuffle       (1,1) logical = true      % Randomize trial order across conditions
-    opts.DAQ_flag      (1,1) logical = false
+    opts.DAQ_flag      (1,1) logical = true
     opts.scope         (1,1) string = '2p'       % 'widefield' or '2p'
     opts.preview       (1,1) logical = false     % Screen preview only, no Teensy
     opts.snapshot       (1,1) logical = true     % Show a per-disparity snapshot montage at startup (binocular w/ disparity)

@@ -44,5 +44,34 @@ class MonocularDevice(GogglesDevice):
             return np.where(self.eye_order == self.EYE_CODES[eye])[0]
         return np.arange(self.n_repeats)
 
-    def _get_repeats(self, eye=None):
-        return self.get_eye_repeats(eye)
+    def get_elevation_repeats(self, elevation=None):
+        """
+        Trial indices at a fixed elevation (px), or all trials if None.
+
+        ``elevation=None`` pools every elevation together -- for a session with
+        ``has_elevation`` that mixes conditions, not a "no filtering needed"
+        no-op, so pass the elevation you actually want (e.g. ``elevation=120``
+        for the plain center-of-screen condition also used by every
+        non-elevation session).
+        """
+        if elevation is None:
+            return np.arange(self.n_repeats)
+        if not self.has_elevation:
+            raise ValueError(
+                f"{self.session_name} has no elevation sweep (opts.elevations was empty "
+                "when this session was recorded) -- there is only one condition, so "
+                "filtering by elevation doesn't apply. Check `device.has_elevation` "
+                "before passing elevation=."
+            )
+        repeats = np.where(np.isclose(self.trial_elevation_px, elevation))[0]
+        if repeats.size == 0:
+            raise ValueError(
+                f"No trials at elevation={elevation} px in {self.session_name}. "
+                f"Swept elevations: {self.elevations.tolist()}"
+            )
+        return repeats
+
+    def _get_repeats(self, eye=None, elevation=None):
+        eye_repeats = self.get_eye_repeats(eye)
+        elev_repeats = self.get_elevation_repeats(elevation)
+        return np.intersect1d(eye_repeats, elev_repeats, assume_unique=True)

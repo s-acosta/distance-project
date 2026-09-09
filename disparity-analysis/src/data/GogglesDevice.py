@@ -153,6 +153,17 @@ class GogglesDevice:
         self.left_fit = self._stim_fit('left')
         self.right_fit = self._stim_fit('right')
 
+        # Elevation sweep (teensyStimulusMonocular's opts.elevations), if used. Empty
+        # (has_elevation False) for every session recorded before that option existed,
+        # or recorded with it left at its default -- both look identical here since
+        # the field is simply absent/empty in the stim log either way.
+        self.elevations = np.atleast_1d(
+            np.asarray(self.stim.get('elevations', []), dtype=float)).ravel()
+        if 'trial_elevation_px' in self.stim:
+            self.trial_elevation_px = np.asarray(self.stim['trial_elevation_px'], dtype=float).ravel()
+        else:
+            self.trial_elevation_px = np.full(self.n_repeats, np.nan)
+
     def _stim_fit(self, eye):
         """That eye's [slope, intercept] deg->pixel fit from the stim log, or None."""
         key = f'{eye}_fit'
@@ -282,6 +293,13 @@ class GogglesDevice:
         if eye == 'left' and rng.min() >= 0:      # legacy drawn panel -> signed axis
             rng = -rng
         return rng
+
+    @property
+    def has_elevation(self):
+        """Whether this session swept multiple fixed elevations (opts.elevations
+        in teensyStimulusMonocular). False for every session that predates that
+        option, and for one recorded with it left at its default (single sweep)."""
+        return self.elevations.size > 0
 
     @property
     def has_angle_range(self):

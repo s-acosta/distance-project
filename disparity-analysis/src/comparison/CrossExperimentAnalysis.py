@@ -33,26 +33,36 @@ class CrossExperimentAnalysis:
     EYE_CMAP = {'left': 'Reds', 'right': 'Blues'}
 
     def __init__(self, radial_df, monocular_df, disparity_df=None, how='inner'):
+        """
+        ``radial_df`` (the distance experiment) is optional — pass None to work
+        with just monocular (+ optionally disparity), e.g. a monocular/disparity
+        goggles-only comparison with no radial session. ``monocular_df`` is
+        always required.
+        """
         self.radial_df = radial_df
         self.monocular_df = monocular_df
         self.disparity_df = disparity_df
 
-        rad = self._radial_reliability(radial_df)
         mono = self._monocular_reliability(monocular_df)
 
-        self.merged = pd.merge(rad, mono, on='cell', how=how)
-        self.merged['reliable_both'] = (
-            self.merged['distance_reliable'] & self.merged['monocular_reliable']
-        )
+        if radial_df is not None:
+            rad = self._radial_reliability(radial_df)
+            self.merged = pd.merge(rad, mono, on='cell', how=how)
+            self.merged['reliable_both'] = (
+                self.merged['distance_reliable'] & self.merged['monocular_reliable']
+            )
+        else:
+            self.merged = mono
 
         if disparity_df is not None:
             disp = self._disparity_reliability(disparity_df)
             self.merged = pd.merge(self.merged, disp, on='cell', how=how)
-            self.merged['reliable_all'] = (
-                self.merged['distance_reliable']
-                & self.merged['monocular_reliable']
-                & self.merged['disparity_reliable']
-            )
+            if radial_df is not None:
+                self.merged['reliable_all'] = (
+                    self.merged['distance_reliable']
+                    & self.merged['monocular_reliable']
+                    & self.merged['disparity_reliable']
+                )
 
         if len(self.merged) == 0:
             print("[warning] no common cells between the DataFrames — the sessions "
@@ -62,18 +72,20 @@ class CrossExperimentAnalysis:
 
     @classmethod
     def from_paths(cls, radial_path, monocular_path, disparity_path=None, **kwargs):
-        """Load the per-cell stats DataFrames from pickle files (disparity optional)."""
+        """Load the per-cell stats DataFrames from pickle files (radial and disparity optional)."""
+        radial_df = pd.read_pickle(radial_path) if radial_path is not None else None
         disparity_df = pd.read_pickle(disparity_path) if disparity_path is not None else None
-        return cls(pd.read_pickle(radial_path), pd.read_pickle(monocular_path),
-                   disparity_df, **kwargs)
+        return cls(radial_df, pd.read_pickle(monocular_path), disparity_df, **kwargs)
 
     @classmethod
     def from_devices(cls, distance_device, monocular_device, disparity_device=None, **kwargs):
-        """Load each device's default ``{session_name}_dataframe.pkl`` from its data_dir."""
+        """Load each device's default ``{session_name}_dataframe.pkl`` from its data_dir.
+        Pass ``distance_device=None`` to skip the radial experiment entirely."""
         def _path(device):
             return os.path.join(device.data_dir, f"{device.session_name}_dataframe.pkl")
+        distance_path = _path(distance_device) if distance_device is not None else None
         disparity_path = _path(disparity_device) if disparity_device is not None else None
-        return cls.from_paths(_path(distance_device), _path(monocular_device),
+        return cls.from_paths(distance_path, _path(monocular_device),
                               disparity_path, **kwargs)
 
     # ------------------------------------------------------ reliability extract
@@ -184,6 +196,11 @@ class CrossExperimentAnalysis:
     def has_disparity(self):
         """True when the disparity (DisparityDevice) experiment was provided."""
         return 'disparity_reliable' in self.merged.columns
+
+    @property
+    def has_distance(self):
+        """True when the distance (RadialDevice) experiment was provided."""
+        return 'distance_reliable' in self.merged.columns
 
     def merged_table(self):
         """Per common-cell table with the reliability flags + carried context."""
@@ -364,8 +381,9 @@ class CrossExperimentAnalysis:
 
         Returns
         -------
-        dict of sorted ndarray, always with 'distance' and 'disparity' (when this
-        experiment has one), plus the monocular key(s) selected above.
+        dict of sorted ndarray, with 'distance' (when this experiment has one)
+        and 'disparity' (when this experiment has one), plus the monocular
+        key(s) selected above.
         """
         m = self.merged
         ids = lambda mask: np.sort(m.loc[mask, 'cell'].to_numpy())
@@ -374,7 +392,9 @@ class CrossExperimentAnalysis:
             t = self._corr_thresh(corr_threshold, key)
             return True if t is None else (m[col] >= t)
 
-        out = {'distance': ids(m['distance_reliable'].astype(bool) & _ge('distance_corr', 'distance'))}
+        out = {}
+        if self.has_distance:
+            out['distance'] = ids(m['distance_reliable'].astype(bool) & _ge('distance_corr', 'distance'))
 
         both_eyes = {'right_reliable', 'left_reliable'}.issubset(m.columns)
         if both_eyes:

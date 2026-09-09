@@ -38,8 +38,11 @@ class CrossExperimentVisualization:
         """
         Parameters
         ----------
-        distance_device : RadialDevice
-            Device for the radial / distance session.
+        distance_device : RadialDevice, optional
+            Device for the radial / distance session. Pass None to compare just
+            the two goggles experiments (monocular + disparity) — the radial
+            band is then omitted wherever it would otherwise appear (e.g.
+            ``make_combined_plot``).
         monocular_device : MonocularDevice
             Device for the per-eye monocular goggles session.
         disparity_device : DisparityDevice, optional
@@ -62,18 +65,27 @@ class CrossExperimentVisualization:
             self._check_device('disparity_device', disparity_device, needs='disparities',
                                wrong='present_eyes')
 
-        others = [('monocular', monocular_device)]
-        if disparity_device is not None:
-            others.append(('disparity', disparity_device))
-        for name, dev in others:
-            if not np.array_equal(self.distance.suite2p_id, dev.suite2p_id):
-                print(
-                    f"[warning] distance and {name} sessions have different suite2p_id arrays "
-                    "-> cell IDs may not refer to the same neuron. Use common_cells() for the "
-                    "overlap; results are only meaningful for a same-suite2p-run split."
-                )
+        if distance_device is not None:
+            others = [('monocular', monocular_device)]
+            if disparity_device is not None:
+                others.append(('disparity', disparity_device))
+            for name, dev in others:
+                if not np.array_equal(self.distance.suite2p_id, dev.suite2p_id):
+                    print(
+                        f"[warning] distance and {name} sessions have different suite2p_id arrays "
+                        "-> cell IDs may not refer to the same neuron. Use common_cells() for the "
+                        "overlap; results are only meaningful for a same-suite2p-run split."
+                    )
+        elif disparity_device is not None and not np.array_equal(
+                monocular_device.suite2p_id, disparity_device.suite2p_id):
+            print(
+                "[warning] monocular and disparity sessions have different suite2p_id arrays "
+                "-> cell IDs may not refer to the same neuron. Use common_cells() for the "
+                "overlap; results are only meaningful for a same-suite2p-run split."
+            )
 
-        self.distance_colors = distance_device.colors  # radial palette (5 entries: dist 0-3 + control)
+        # radial palette (5 entries: dist 0-3 + control); unavailable without a distance device
+        self.distance_colors = distance_device.colors if distance_device is not None else None
 
     @staticmethod
     def _check_device(arg, device, needs, wrong):
@@ -93,7 +105,10 @@ class CrossExperimentVisualization:
 
     def common_cells(self):
         """Sorted cell IDs present in all provided sessions."""
-        ids = np.intersect1d(self.distance.suite2p_id, self.monocular.suite2p_id)
+        if self.distance is not None:
+            ids = np.intersect1d(self.distance.suite2p_id, self.monocular.suite2p_id)
+        else:
+            ids = np.unique(self.monocular.suite2p_id)
         if self.disparity is not None:
             ids = np.intersect1d(ids, self.disparity.suite2p_id)
         return ids
@@ -102,6 +117,14 @@ class CrossExperimentVisualization:
     def _vlimits(device, cell):
         idx = np.where(device.suite2p_id == cell)[0][0]
         return np.percentile(device.response[idx, :], [1, 99])
+
+    @staticmethod
+    def _no_angle_range(ax_angle):
+        """Blank the angle axis for a legacy pixel-format session (no start_deg/end_deg
+        logged) instead of raising — see ``GogglesDevice.get_angle_range``."""
+        ax_angle.axis('off')
+        ax_angle.text(0.5, 0.5, 'No angle calibration\n(legacy pixel-format session)',
+                      ha='center', va='center', fontsize=11, transform=ax_angle.transAxes)
 
     # ------------------------------------------------ monocular (top) drawing
 
@@ -151,7 +174,7 @@ class CrossExperimentVisualization:
                          fontsize=11, loc='best', frameon=False)
 
             # --- tuning vs visual angle (shared axis for both eyes) ---
-            if ax_angle is not None:
+            if ax_angle is not None and D.has_angle_range:
                 ang = D.get_angle_range()
                 ax_angle.fill_between(ang, left_mean - left_sem, left_mean + left_sem, alpha=0.2, color='red')
                 ax_angle.plot(ang, left_mean, linewidth=2, color='red')
@@ -165,6 +188,8 @@ class CrossExperimentVisualization:
                                 labels=[f'Left Eye (RF: {ang[left_rf_idx]:.1f}°)',
                                         f'Right Eye (RF: {ang[right_rf_idx]:.1f}°)'],
                                 fontsize=11, loc='best', frameon=False)
+            elif ax_angle is not None:
+                self._no_angle_range(ax_angle)
         else:
             eye = D.present_eyes[0]
             traces = D.get_all_traces(cell, eye=eye)
@@ -187,7 +212,7 @@ class CrossExperimentVisualization:
             ax_px.legend([ax_px.lines[0]], [f'{eye.capitalize()} Eye (RF: {px[rf_idx]:.1f} px)'],
                          fontsize=11, loc='best', frameon=False)
 
-            if ax_angle is not None:
+            if ax_angle is not None and D.has_angle_range:
                 ang = D.get_angle_range()
                 ax_angle.fill_between(ang, mean_trace - sem_trace, mean_trace + sem_trace, alpha=0.2, color=color)
                 ax_angle.plot(ang, mean_trace, linewidth=2, color=color)
@@ -196,6 +221,8 @@ class CrossExperimentVisualization:
                 ax_angle.set_title('Mean Trace ± SEM (deg)', fontsize=18)
                 ax_angle.legend([ax_angle.lines[0]], [f'{eye.capitalize()} Eye (RF: {ang[rf_idx]:.1f}°)'],
                                 fontsize=11, loc='best', frameon=False)
+            elif ax_angle is not None:
+                self._no_angle_range(ax_angle)
 
     # ------------------------------------------------- distance (bottom) drawing
 
@@ -394,10 +421,12 @@ class CrossExperimentVisualization:
 
     def make_combined_plot(self, cell, units='deg', radial_condition=None):
         """
-        One figure stacking all three experiments for a single cell, top to
-        bottom: monocular (per-eye goggles), binocular disparity stimulus, and
-        radial (distance) as the last row (with its per-distance peak-amplitude
-        bars). Mirrors the two-experiment ``CombinedCellVisualizer.make_combined_plot``.
+        One figure stacking the available experiments for a single cell, top to
+        bottom: monocular (per-eye goggles), binocular disparity stimulus, and —
+        only when this instance was built with a distance device — radial
+        (distance) as the last row (with its per-distance peak-amplitude bars).
+        Without a distance device the figure is just the two goggles bands.
+        Mirrors the two-experiment ``CombinedCellVisualizer.make_combined_plot``.
 
         Parameters
         ----------
@@ -405,8 +434,9 @@ class CrossExperimentVisualization:
             x-axis units for the disparity band's mean overlays.
         radial_condition : optional
             Forwarded to the radial band as the ``RadialDevice`` ``monocular``
-            condition selector (None = pooled). This is the radial experiment's
-            own monocular/binocular condition, distinct from the 'monocular'
+            condition selector (None = pooled). Ignored when there is no
+            distance device. This is the radial experiment's own
+            monocular/binocular condition, distinct from the 'monocular'
             (per-eye goggles) experiment.
         """
         if self.disparity is None:
@@ -414,12 +444,19 @@ class CrossExperimentVisualization:
                 "make_combined_plot needs the disparity experiment; construct with "
                 "CrossExperimentVisualization(distance, monocular, disparity).")
 
+        include_distance = self.distance is not None
         n = self.disparity.n_disparities
-        fig = plt.figure(figsize=(max(20, 4.8 * n), 26), constrained_layout=True)
-        # a thin dedicated strip holds the cell title so it can't overlap a band title;
-        # bands, top -> bottom: monocular, disparity, radial (radial last, per request)
-        title_sf, top, mid, bottom = fig.subfigures(
-            4, 1, height_ratios=[0.10, 1.0, 1.9, 1.1], hspace=0.05)
+
+        if include_distance:
+            fig = plt.figure(figsize=(max(20, 4.8 * n), 26), constrained_layout=True)
+            # a thin dedicated strip holds the cell title so it can't overlap a band title;
+            # bands, top -> bottom: monocular, disparity, radial (radial last, per request)
+            title_sf, top, mid, bottom = fig.subfigures(
+                4, 1, height_ratios=[0.10, 1.0, 1.9, 1.1], hspace=0.05)
+        else:
+            fig = plt.figure(figsize=(max(20, 4.8 * n), 19), constrained_layout=True)
+            title_sf, top, mid = fig.subfigures(
+                3, 1, height_ratios=[0.10, 1.0, 1.9], hspace=0.05)
         title_sf.text(0.5, 0.5, f'Cell {cell}', ha='center', va='center',
                       fontsize=26, fontweight='bold')
 
@@ -432,15 +469,16 @@ class CrossExperimentVisualization:
         self._draw_disparity(mid, cell, units=units)
         mid.suptitle('Disparity (both eyes)', fontsize=22, fontweight='bold')
 
-        # --- band 3: radial (distance) — last row, incl. per-distance bars ---
-        gs = bottom.add_gridspec(1, 4)
-        ax_heat = bottom.add_subplot(gs[0, 0])
-        ax_polar = bottom.add_subplot(gs[0, 1], projection='polar')
-        ax_tuning = bottom.add_subplot(gs[0, 2])
-        ax_box = bottom.add_subplot(gs[0, 3])
-        self._draw_distance_columns(ax_heat, ax_polar, ax_tuning, cell,
-                                    monocular=radial_condition, ax_box=ax_box)
-        bottom.suptitle('Distance (radial)', fontsize=22, fontweight='bold')
+        # --- band 3 (optional): radial (distance) — last row, incl. per-distance bars ---
+        if include_distance:
+            gs = bottom.add_gridspec(1, 4)
+            ax_heat = bottom.add_subplot(gs[0, 0])
+            ax_polar = bottom.add_subplot(gs[0, 1], projection='polar')
+            ax_tuning = bottom.add_subplot(gs[0, 2])
+            ax_box = bottom.add_subplot(gs[0, 3])
+            self._draw_distance_columns(ax_heat, ax_polar, ax_tuning, cell,
+                                        monocular=radial_condition, ax_box=ax_box)
+            bottom.suptitle('Distance (radial)', fontsize=22, fontweight='bold')
 
         return fig
 

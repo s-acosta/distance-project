@@ -87,13 +87,17 @@ class CellAnalyzer:
     def __init__(self, device):
         self.device = device
 
-    def compute_reliability(self, cell, eye=None, n_iterations=100, shift_window=None):
+    def compute_reliability(self, cell, eye=None, n_iterations=100, shift_window=None, **cond):
         """
-        Split-half reliability of a cell's response for an eye condition.
+        Split-half reliability of a cell's response for an eye (+ any other
+        ``**cond``, e.g. ``elevation=120``) condition.
 
-        Randomly splits the eye's trials in half, correlates the two mean
-        traces, and repeats ``n_iterations`` times. A circularly-shifted null is
-        computed in parallel. Trace lengths are truncated to the shortest trial.
+        Randomly splits the trials in half, correlates the two mean traces, and
+        repeats ``n_iterations`` times. A circularly-shifted null is computed in
+        parallel. Trace lengths are truncated to the shortest trial. Trial
+        selection is delegated to the device's :meth:`_get_repeats` hook (same
+        as :meth:`GogglesDevice.get_all_traces`), so any condition it supports
+        works here too.
 
         Returns
         -------
@@ -101,7 +105,7 @@ class CellAnalyzer:
             Split-half correlations and shifted-null correlations.
         """
         idx = np.where(self.device.suite2p_id == cell)[0][0]
-        repeat_indices = self.device.get_eye_repeats(eye)
+        repeat_indices = self.device._get_repeats(eye=eye, **cond)
 
         traces = [self.device.get_on_trace(idx, repeat).T for repeat in repeat_indices]
         if len(traces) == 0:
@@ -112,9 +116,10 @@ class CellAnalyzer:
 
         return split_half_reliability(all_traces, n_iterations=n_iterations, shift_window=shift_window)
 
-    def analyze_cell_reliability(self, cell, eye, n_iterations=200, stimulus_percentile=99):
+    def analyze_cell_reliability(self, cell, eye, n_iterations=200, stimulus_percentile=99, **cond):
         """
-        Whether a cell is reliably driven by the stimulus in one eye.
+        Whether a cell is reliably driven by the stimulus in one eye (+ any
+        other ``**cond``, e.g. ``elevation=120``).
 
         Reliable when the mean split-half correlation exceeds the
         ``stimulus_percentile`` of the shifted-null distribution.
@@ -125,7 +130,7 @@ class CellAnalyzer:
             {'reliable': bool, 'mean_corr': float}
         """
         corr, corr_shifted = self.compute_reliability(
-            cell=cell, eye=eye, n_iterations=n_iterations
+            cell=cell, eye=eye, n_iterations=n_iterations, **cond
         )
 
         mean_corr = np.nanmean(corr)
@@ -136,9 +141,10 @@ class CellAnalyzer:
             'mean_corr': float(mean_corr),
         }
 
-    def analyze_ocular_dominance(self, cell):
+    def analyze_ocular_dominance(self, cell, **cond):
         """
-        Ocular dominance index from the per-eye RF peak responses.
+        Ocular dominance index from the per-eye RF peak responses (+ any other
+        ``**cond``, e.g. ``elevation=120``).
 
         ODI = (|right| - |left|) / (|right| + |left|);  >0 right-eye preference,
         <0 left-eye preference. Returns None for single-eye sessions.
@@ -146,23 +152,26 @@ class CellAnalyzer:
         if self.device.single_eye:
             return None
 
-        _, right_val = self.device.find_rf_position(cell, eye='right')
-        _, left_val = self.device.find_rf_position(cell, eye='left')
+        _, right_val = self.device.find_rf_position(cell, eye='right', **cond)
+        _, left_val = self.device.find_rf_position(cell, eye='left', **cond)
 
         denom = np.abs(right_val) + np.abs(left_val)
         if denom == 0:
             return None
         return float((np.abs(right_val) - np.abs(left_val)) / denom)
 
-    def analyze_cell_stats(self, cell, n_iterations=200):
+    def analyze_cell_stats(self, cell, n_iterations=200, **cond):
         """
-        Reliability + RF summary for one cell.
+        Reliability + RF summary for one cell (+ any other ``**cond``, e.g.
+        ``elevation=120`` on a session with ``device.has_elevation``).
 
         For a single-eye session the columns are un-prefixed (``reliable``,
         ``mean_corr``, ``rf``, ``rf_value``, ``px``). For a both-eye session the
         columns are prefixed per eye (``right_*`` / ``left_*``) and an ``ODI`` is
         included. ``px`` uses signed screen coordinates (left negative) only when
-        both eyes are present, matching the notebook.
+        both eyes are present, matching the notebook. Any ``**cond`` passed in
+        is stamped onto the row as-is (e.g. an ``elevation`` column), so rows
+        from different conditions concatenate into one tidy DataFrame.
         """
         cell = int(cell)
         signed = not self.device.single_eye
@@ -170,8 +179,8 @@ class CellAnalyzer:
         row = {'cell': cell, 'session_name': self.device.session_name}
 
         for eye in self.device.present_eyes:
-            rel = self.analyze_cell_reliability(cell, eye=eye, n_iterations=n_iterations)
-            rf_idx, rf_val = self.device.find_rf_position(cell, eye=eye)
+            rel = self.analyze_cell_reliability(cell, eye=eye, n_iterations=n_iterations, **cond)
+            rf_idx, rf_val = self.device.find_rf_position(cell, eye=eye, **cond)
             px = self.device.get_screen_range(eye, signed=signed)[rf_idx]
 
             prefix = '' if self.device.single_eye else f'{eye}_'
@@ -182,8 +191,9 @@ class CellAnalyzer:
             row[f'{prefix}px'] = px
 
         if not self.device.single_eye:
-            row['ODI'] = self.analyze_ocular_dominance(cell)
+            row['ODI'] = self.analyze_ocular_dominance(cell, **cond)
 
+        row.update(cond)
         return row
 
 
@@ -202,14 +212,46 @@ class SessionAnalyzer:
         self.device = device
         self.cell_analyzer = CellAnalyzer(device)
 
-    def analyze_session_stats(self, n_iterations=200):
-        """Run :meth:`CellAnalyzer.analyze_cell_stats` for every cell."""
+    def analyze_session_stats(self, n_iterations=200, **cond):
+        """
+        Run :meth:`CellAnalyzer.analyze_cell_stats` for every cell.
+
+        With no ``**cond``, pools every trial regardless of condition -- for a
+        plain (non-elevation) session that's everything, unchanged from before.
+        For a session with ``device.has_elevation``, that pools *across*
+        elevations, which is rarely what you want; pass ``elevation=120`` (or
+        whatever your center/default elevation is) to restrict to one condition,
+        the same way a non-elevation session's single sweep always behaved. See
+        :meth:`analyze_by_elevation` to instead get every elevation at once.
+        """
         rows = []
         for cell in self.device.suite2p_id:
             print(f'Analyzing cell {cell} of {self.device.suite2p_id[-1]}', end='\r', flush=True)
-            rows.append(self.cell_analyzer.analyze_cell_stats(int(cell), n_iterations=n_iterations))
+            rows.append(self.cell_analyzer.analyze_cell_stats(int(cell), n_iterations=n_iterations, **cond))
 
         return pd.DataFrame(rows)
+
+    def analyze_by_elevation(self, n_iterations=200):
+        """
+        Run :meth:`analyze_session_stats` separately for every elevation this
+        session swept, and concatenate the results into one long-format
+        DataFrame (one block of per-cell rows per elevation, tagged by an
+        ``elevation`` column). Requires ``device.has_elevation``.
+        """
+        if not self.device.has_elevation:
+            raise ValueError(
+                f"{self.device.session_name} has no elevation sweep -- there's only one "
+                "condition, so there's nothing to break out by elevation. Use "
+                "analyze_session_stats() instead."
+            )
+        dfs = []
+        for elev in self.device.elevations:
+            elev = float(elev)
+            print(f'=== Elevation {elev:.0f} px ===' + ' ' * 20)
+            df = self.analyze_session_stats(n_iterations=n_iterations, elevation=elev)
+            dfs.append(df)
+
+        return pd.concat(dfs, ignore_index=True)
 
     def save_dataframe(self, df, save_path=None):
         """Save a stats DataFrame next to the session data (.pkl or .csv)."""

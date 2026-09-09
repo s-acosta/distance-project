@@ -107,7 +107,11 @@ class RadialDevice:
 
         container = self._load_stimulus_container()
 
-        structure_name = 'distance_stim' if 'distance_stim' in container else 'distance_stimulus'
+        struct_keys = [k for k in container if not k.startswith('__')]
+        if len(struct_keys) != 1:
+            raise Exception(f'Expected exactly one stimulus struct in .mat file, found: {struct_keys}')
+        structure_name = struct_keys[0]
+
         locals_dict = import_vars_from_matlab(container, structure_name)
 
         self.distances_showed = locals_dict['distances']

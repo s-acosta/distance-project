@@ -230,13 +230,6 @@ class CellVisualizer:
             The figure object.
         """
 
-        # Get cell index
-        idx = np.where(self.device.suite2p_id == cell)[0][0]
-
-        # Define distances to plot
-        distances_with_control = [0, 1, 2, 3, 4]
-        distances_without_control = [0, 1, 2, 3]
-
         has_monocular, has_binocular = self.analyzer._get_available_conditions()
 
         conditions = []
@@ -266,131 +259,159 @@ class CellVisualizer:
 
         # Process each condition
         for c_idx, condition in enumerate(conditions):
-
-            results_condition = results[condition['title']]
-
-            repeat_traces = []
-            repeats_per_distance = []
-
-            for i, dist in enumerate(distances_with_control):
-                repeat_indices = self.device.get_condition_trials(
-                    monocular=condition['monocular'],
-                    distance=dist
-                )
-
-                for repeat in repeat_indices:
-                    repeat_traces.append(self.device.get_on_trace(idx, repeat))
-
-
-                repeats_distance_mean, repeats_distance_sem = self.device.get_all_traces(cell, distance=dist, monocular=condition['monocular'], mean_trace=True)
-
-                axs[c_idx, 2].plot(self.device.angle_range, repeats_distance_mean,
-                                  color=self.colors[dist],
-                                  label=f'Distance {dist}',
-                                  linewidth=3)
-                axs[c_idx, 2].fill_between(
-                    self.device.angle_range.flatten(),
-                    repeats_distance_mean - repeats_distance_sem,
-                    repeats_distance_mean + repeats_distance_sem,
-                    color=self.colors[dist], alpha=0.2
-                )
-
-            axs[c_idx, 0].pcolormesh(repeat_traces, cmap='viridis', vmin=vmin, vmax=vmax)
-
-            axs[c_idx, 0].set_xlabel('Time (frames)')
-            axs[c_idx, 0].set_ylabel('Trials')
-            axs[c_idx, 0].set_title(f'{condition["title"]} - All Traces', fontsize=14)
-
-            # radial plot
-            n_theta = len(self.device.angle_range)
-            theta_edges = np.linspace(np.radians(self.device.angle_range[0]), np.radians(self.device.angle_range[-1]), n_theta + 1)
-            r_edges = np.linspace(0, len(distances_without_control), len(distances_without_control) + 1)
-            theta_grid, r_grid = np.meshgrid(theta_edges, r_edges)
-
-            matrices = [self.device.get_all_traces(cell=cell, monocular=condition['monocular'], distance=dist, mean_trace=True)[0] for dist in [0, 1, 2, 3]]
-            Z = np.vstack(matrices)
-
-            # # Make this axis polar
-            # Create a polar axis in place of the corresponding cartesian axis
-            ax_polar = plt.subplot2grid(axs.shape, (c_idx, 1), projection='polar', fig=fig)
-            ax_polar.set_theta_zero_location('N')
-            ax_polar.set_theta_direction(-1)
-            ax_polar.set_thetamin(self.device.angle_range[0])
-            ax_polar.set_thetamax(self.device.angle_range[-1])
-            # Plot on the polar axis
-            pcm = ax_polar.pcolormesh(theta_grid, r_grid, Z, shading='auto', cmap='viridis', vmin=vmin, vmax=vmax)
-
-            # Optionally, copy over the title
-            ax_polar.set_title(f'{condition["title"]} - Mean Traces', fontsize=14)
-
-            # Add axis for second subplot
-            axs[c_idx, 2].set_xlabel('Degrees (deg)')
-            axs[c_idx, 2].set_ylabel(self.device.response_mode)
-            axs[c_idx, 2].set_title(f'{condition["title"]} - Mean Traces', fontsize=14)
-            # add vertical line at 30 degrees
-            axs[c_idx, 2].axvline(x=30, color='lightgray', linestyle='--', linewidth=2)
-            axs[c_idx, 2].set_ylim(vmin, vmax)
-
-            # boxplot
-            rf_values = [self.device.find_rf_values(cell, distance=distance, monocular=condition['monocular']) for distance in distances_with_control]
-            rf_position = self.device.find_rf_position(cell, monocular=condition['monocular'])
-
-            bp = axs[c_idx, 3].boxplot(rf_values, patch_artist=True, labels=distances_without_control + ['control'], showfliers=False)
-
-            for element in ['boxes', 'whiskers', 'caps', 'medians']:
-                for item in bp[element]:
-                    item.set_color('black')
-                    item.set_linewidth(1)
-            for box in bp['boxes']:
-                box.set_facecolor('none')
-
-            for i, rf_vals in enumerate(rf_values):
-                x = np.random.normal(i+1, 0.04, size=len(rf_vals))
-                axs[c_idx, 3].scatter(x, rf_vals, alpha=0.8, color=self.colors[i], s=40)
-
-            # # # Check if p_value is significant and if the cell is responsive for the monocular condition
-            # responsive, responsive_visually, responsive_control, responsive_control_higher, responsive_corr = self.analyzer.analyze_cell_reliability(cell, monocular=condition['monocular'])
-            # if modulated and responsive_visually:
-            #     bar_height = vmax * 0.8
-            #     axs[c_idx, 3].plot([1, len(distances_with_control)], [bar_height, bar_height], 'k-', linewidth=1.5)
-            #     axs[c_idx, 3].text((1 + len(distances_with_control))/2, bar_height*1.02, '*', ha='center', va='bottom')
-
-            # axs[c_idx, 3].set_title(f'modulated={modulated}', fontsize=14)
-            axs[c_idx, 3].set_xlabel('Distance')
-            axs[c_idx, 3].set_ylabel(self.device.response_mode)
-            axs[c_idx, 3].set_ylim(vmin, vmax)
-
-
-
-            bootstrap_modulated = reliable and results_condition['bootstrap_pvalue'] < 0.05
-            anova_modulated = reliable and results_condition['anova_pvalue'] < 0.05
-
-            # --- Stats text column ---
-            stats_lines = []
-
-            stats_lines.append(f"Bootstrap modulated: {bootstrap_modulated}")
-            stats_lines.append(f"Anova modulated: {anova_modulated}")
-            stats_lines.append(f"")
-
-            stats_lines.append(f"Reliable General: {reliable}")
-            stats_lines.append(f"Reliable Condition: {results_condition['reliable']}")
-            stats_lines.append(f"Correlation: {results_condition['reliable_corr']:.2f}")
-            stats_lines.append(f"Bootstrap value: {results_condition['bootstrap_pvalue']:.3f}")
-            stats_lines.append(f"Anova pvalue: {results_condition['anova_pvalue']:.3f}")
-            stats_lines.append(f"RF: {results_condition['RF']:.2f}")
-            stats_lines.append(f"Distance: {np.mean(results_condition['distance']):.2f}")
-            stats_lines.append(f"Consistency: {results_condition['consistency']:.2f}%")
-            stats_lines.append(f"DTI: {results_condition['DTI']:.2f}")
-
-            stats_text = "\n".join(stats_lines)
-            axs[c_idx, 4].axis('off')
-            axs[c_idx, 4].text(0, 1, stats_text, va='top', ha='left', fontsize=16, family='monospace')
+            self._draw_condition_row(fig, axs, c_idx, cell, condition, results, reliable, vmin, vmax)
 
         # Add suptitle to the figure
         fig.suptitle(f'Cell {cell}', fontsize=20)
         plt.tight_layout()
 
         return fig
+
+    def _draw_condition_row(self, fig, axs, row_idx, cell, condition, results, reliable, vmin, vmax, row_label=None):
+        """
+        Draw one condition's row (all-traces heatmap, polar mean plot, tuning curve,
+        RF boxplot, stats text) into an existing axes grid built like the one in
+        `plot_all_traces_colormap_distances`.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure
+            Figure the axes belong to (needed to add the polar subplot).
+        axs : np.ndarray
+            2D array of axes, shape (n_rows, 5), with column 1 of `row_idx` already removed.
+        row_idx : int
+            Row of `axs` to draw into.
+        cell : int
+            Cell ID to plot.
+        condition : dict
+            {'monocular': bool, 'title': str} — which condition this row represents.
+        results : dict
+            Output of `self.analyzer.analyze_cell_stats(cell)`.
+        reliable : bool
+            Whether the cell is reliable in any condition (shared across a session's rows).
+        vmin, vmax : float
+            Shared color/y-axis limits for this row.
+        row_label : str, optional
+            Prefix added to panel titles (e.g. a session name), for stacking rows from
+            multiple sessions in one figure. Omit for single-session behavior.
+        """
+
+        # Get cell index
+        idx = np.where(self.device.suite2p_id == cell)[0][0]
+
+        # Define distances to plot
+        distances_with_control = [0, 1, 2, 3, 4]
+        distances_without_control = [0, 1, 2, 3]
+
+        title_prefix = f'{row_label} - ' if row_label else ''
+
+        results_condition = results[condition['title']]
+
+        repeat_traces = []
+
+        for i, dist in enumerate(distances_with_control):
+            repeat_indices = self.device.get_condition_trials(
+                monocular=condition['monocular'],
+                distance=dist
+            )
+
+            for repeat in repeat_indices:
+                repeat_traces.append(self.device.get_on_trace(idx, repeat))
+
+
+            repeats_distance_mean, repeats_distance_sem = self.device.get_all_traces(cell, distance=dist, monocular=condition['monocular'], mean_trace=True)
+
+            axs[row_idx, 2].plot(self.device.angle_range, repeats_distance_mean,
+                              color=self.colors[dist],
+                              label=f'Distance {dist}',
+                              linewidth=3)
+            axs[row_idx, 2].fill_between(
+                self.device.angle_range.flatten(),
+                repeats_distance_mean - repeats_distance_sem,
+                repeats_distance_mean + repeats_distance_sem,
+                color=self.colors[dist], alpha=0.2
+            )
+
+        axs[row_idx, 0].pcolormesh(repeat_traces, cmap='viridis', vmin=vmin, vmax=vmax)
+
+        axs[row_idx, 0].set_xlabel('Time (frames)')
+        axs[row_idx, 0].set_ylabel('Trials')
+        axs[row_idx, 0].set_title(f'{title_prefix}{condition["title"]} - All Traces', fontsize=14)
+
+        # radial plot
+        n_theta = len(self.device.angle_range)
+        theta_edges = np.linspace(np.radians(self.device.angle_range[0]), np.radians(self.device.angle_range[-1]), n_theta + 1)
+        r_edges = np.linspace(0, len(distances_without_control), len(distances_without_control) + 1)
+        theta_grid, r_grid = np.meshgrid(theta_edges, r_edges)
+
+        matrices = [self.device.get_all_traces(cell=cell, monocular=condition['monocular'], distance=dist, mean_trace=True)[0] for dist in [0, 1, 2, 3]]
+        Z = np.vstack(matrices)
+
+        # # Make this axis polar
+        # Create a polar axis in place of the corresponding cartesian axis
+        ax_polar = plt.subplot2grid(axs.shape, (row_idx, 1), projection='polar', fig=fig)
+        ax_polar.set_theta_zero_location('N')
+        ax_polar.set_theta_direction(-1)
+        ax_polar.set_thetamin(self.device.angle_range[0])
+        ax_polar.set_thetamax(self.device.angle_range[-1])
+        # Plot on the polar axis
+        pcm = ax_polar.pcolormesh(theta_grid, r_grid, Z, shading='auto', cmap='viridis', vmin=vmin, vmax=vmax)
+
+        # Optionally, copy over the title
+        ax_polar.set_title(f'{title_prefix}{condition["title"]} - Mean Traces', fontsize=14)
+
+        # Add axis for second subplot
+        axs[row_idx, 2].set_xlabel('Degrees (deg)')
+        axs[row_idx, 2].set_ylabel(self.device.response_mode)
+        axs[row_idx, 2].set_title(f'{title_prefix}{condition["title"]} - Mean Traces', fontsize=14)
+        # add vertical line at 30 degrees
+        axs[row_idx, 2].axvline(x=30, color='lightgray', linestyle='--', linewidth=2)
+        axs[row_idx, 2].set_ylim(vmin, vmax)
+
+        # boxplot
+        rf_values = [self.device.find_rf_values(cell, distance=distance, monocular=condition['monocular']) for distance in distances_with_control]
+        rf_position = self.device.find_rf_position(cell, monocular=condition['monocular'])
+
+        bp = axs[row_idx, 3].boxplot(rf_values, patch_artist=True, labels=distances_without_control + ['control'], showfliers=False)
+
+        for element in ['boxes', 'whiskers', 'caps', 'medians']:
+            for item in bp[element]:
+                item.set_color('black')
+                item.set_linewidth(1)
+        for box in bp['boxes']:
+            box.set_facecolor('none')
+
+        for i, rf_vals in enumerate(rf_values):
+            x = np.random.normal(i+1, 0.04, size=len(rf_vals))
+            axs[row_idx, 3].scatter(x, rf_vals, alpha=0.8, color=self.colors[i], s=40)
+
+        axs[row_idx, 3].set_xlabel('Distance')
+        axs[row_idx, 3].set_ylabel(self.device.response_mode)
+        axs[row_idx, 3].set_ylim(vmin, vmax)
+
+        bootstrap_modulated = reliable and results_condition['bootstrap_pvalue'] < 0.05
+        anova_modulated = reliable and results_condition['anova_pvalue'] < 0.05
+
+        # --- Stats text column ---
+        stats_lines = []
+
+        stats_lines.append(f"Bootstrap modulated: {bootstrap_modulated}")
+        stats_lines.append(f"Anova modulated: {anova_modulated}")
+        stats_lines.append(f"")
+
+        stats_lines.append(f"Reliable General: {reliable}")
+        stats_lines.append(f"Reliable Condition: {results_condition['reliable']}")
+        stats_lines.append(f"Correlation: {results_condition['reliable_corr']:.2f}")
+        stats_lines.append(f"Bootstrap value: {results_condition['bootstrap_pvalue']:.3f}")
+        stats_lines.append(f"Anova pvalue: {results_condition['anova_pvalue']:.3f}")
+        stats_lines.append(f"RF: {results_condition['RF']:.2f}")
+        stats_lines.append(f"Distance: {np.mean(results_condition['distance']):.2f}")
+        stats_lines.append(f"Consistency: {results_condition['consistency']:.2f}%")
+        stats_lines.append(f"DTI: {results_condition['DTI']:.2f}")
+
+        stats_text = "\n".join(stats_lines)
+        axs[row_idx, 4].axis('off')
+        axs[row_idx, 4].text(0, 1, stats_text, va='top', ha='left', fontsize=16, family='monospace')
 
     def plot_bootstrap_modulation(self, cell):
 

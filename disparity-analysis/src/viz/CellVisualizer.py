@@ -59,7 +59,7 @@ class CellVisualizer(CellVizBase):
                 return float(row[f'{eye}_mean_corr'].iloc[0])
         return self.analyzer.analyze_cell_reliability(cell, eye=eye, **self._cond())['mean_corr']
 
-    def make_comparison_plot(self, cell, fig=None):
+    def make_comparison_plot(self, cell, fig=None, fontscale=1.0):
         """
         Four panels: left-eye trial heatmap, right-eye trial heatmap, and the two
         mean±SEM tuning curves overlaid (red=left, blue=right) vs pixels and vs
@@ -67,7 +67,14 @@ class CellVisualizer(CellVizBase):
 
         Pass ``fig`` (a Figure or SubFigure) to draw into it instead of creating a
         new figure (used by the combined monocular+binocular view).
+
+        ``fontscale`` multiplies every font size. The combined figure is far wider
+        than this plot is standalone, so text sized for one is unreadable in the
+        other; it passes a value above 1.
         """
+        def fs(size):
+            return size * fontscale
+
         if not all(e in self.device.present_eyes for e in ('left', 'right')):
             raise ValueError(
                 f"make_comparison_plot needs both eyes; this session has {self.device.present_eyes}. "
@@ -92,17 +99,17 @@ class CellVisualizer(CellVizBase):
 
         ax = axes[0]
         ax.pcolor(left_traces, vmin=vmin, vmax=vmax, cmap=self.EYE_CMAP['left'])
-        ax.set_xlabel('Time (frames)', fontsize=20)
-        ax.set_ylabel('Trial', fontsize=20)
-        ax.set_title(f'Left Eye (corr: {left_corr:.2f})', fontsize=24)
-        ax.tick_params(axis='both', which='major', labelsize=18)
+        ax.set_xlabel('Time (frames)', fontsize=fs(20))
+        ax.set_ylabel('Trial', fontsize=fs(20))
+        ax.set_title(f'Left Eye (corr: {left_corr:.2f})', fontsize=fs(24))
+        ax.tick_params(axis='both', which='major', labelsize=fs(18))
 
         ax = axes[1]
         ax.pcolor(right_traces, vmin=vmin, vmax=vmax, cmap=self.EYE_CMAP['right'])
-        ax.set_xlabel('Time (frames)', fontsize=20)
-        ax.set_ylabel('Trial', fontsize=20)
-        ax.set_title(f'Right Eye (corr: {right_corr:.2f})', fontsize=24)
-        ax.tick_params(axis='both', which='major', labelsize=18)
+        ax.set_xlabel('Time (frames)', fontsize=fs(20))
+        ax.set_ylabel('Trial', fontsize=fs(20))
+        ax.set_title(f'Right Eye (corr: {right_corr:.2f})', fontsize=fs(24))
+        ax.tick_params(axis='both', which='major', labelsize=fs(18))
 
         left_rf_idx, _ = self.device.find_rf_position(cell, eye='left', **cond)
         right_rf_idx, _ = self.device.find_rf_position(cell, eye='right', **cond)
@@ -119,15 +126,15 @@ class CellVisualizer(CellVizBase):
 
         ax.set_xlim(left_px.min(), right_px.max())
         ax.set_ylim(vmin, vmax)
-        ax.set_xlabel('Pixels', fontsize=24)
-        ax.set_ylabel('Activity (z-score)', fontsize=20)
-        ax.set_title('Mean Trace ± SEM (px)', fontsize=24)
-        ax.tick_params(axis='both', which='major', labelsize=20)
+        ax.set_xlabel('Pixels', fontsize=fs(24))
+        ax.set_ylabel('Activity (z-score)', fontsize=fs(20))
+        ax.set_title('Mean Trace ± SEM (px)', fontsize=fs(24))
+        ax.tick_params(axis='both', which='major', labelsize=fs(20))
         ax.legend(
             handles=[ax.lines[0], ax.lines[1]],
             labels=[f'Left Eye (RF: {left_px[left_rf_idx]:.1f} px)',
                     f'Right Eye (RF: {right_px[right_rf_idx]:.1f} px)'],
-            fontsize=16, loc='best', frameon=False,
+            fontsize=fs(16), loc='best', frameon=False,
         )
 
         # --- panel 4: tuning vs visual angle (shared axis for both eyes) ---
@@ -142,23 +149,23 @@ class CellVisualizer(CellVizBase):
 
             ax.set_xlim(ang[0], ang[-1])
             ax.set_ylim(vmin, vmax)
-            ax.set_xlabel('Angle (deg)', fontsize=24)
-            ax.set_ylabel('Activity (z-score)', fontsize=20)
-            ax.set_title('Mean Trace ± SEM (deg)', fontsize=24)
-            ax.tick_params(axis='both', which='major', labelsize=20)
+            ax.set_xlabel('Angle (deg)', fontsize=fs(24))
+            ax.set_ylabel('Activity (z-score)', fontsize=fs(20))
+            ax.set_title('Mean Trace ± SEM (deg)', fontsize=fs(24))
+            ax.tick_params(axis='both', which='major', labelsize=fs(20))
             ax.legend(
                 handles=[ax.lines[0], ax.lines[1]],
                 labels=[f'Left Eye (RF: {ang[left_rf_idx]:.1f}°)',
                         f'Right Eye (RF: {ang[right_rf_idx]:.1f}°)'],
-                fontsize=16, loc='best', frameon=False,
+                fontsize=fs(16), loc='best', frameon=False,
             )
         else:
             ax.axis('off')
             ax.text(0.5, 0.5, 'No angle calibration\n(legacy pixel-format session)',
-                    ha='center', va='center', fontsize=16, transform=ax.transAxes)
+                    ha='center', va='center', fontsize=fs(16), transform=ax.transAxes)
 
         if own_fig:
-            fig.suptitle(f'Cell {cell}', fontsize=20)
+            fig.suptitle(f'Cell {cell}', fontsize=fs(20))
             fig.tight_layout()
         return fig
 

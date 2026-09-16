@@ -430,7 +430,9 @@ class CellAnalyzer:
                 'reliable': reliable_results['reliable'],
                 'reliable_corr': reliable_results['mean_corr'].tolist(),
                 'bootstrap_pvalue': modulation_results['bootstrap_p_value'].tolist(),
-                'anova_pvalue': modulation_results['anova_p_value'].tolist(),
+                # f_oneway returns a plain float nan when every group is constant,
+                # which sparse spike trains do produce -- so no .tolist() here.
+                'anova_pvalue': float(modulation_results['anova_p_value']),
                 'consistency': modulation_results['preferred_distance_consistency'].tolist(),
                 'DTI': np.mean(modulation_results['modulation_index']).tolist(),
                 'distance': np.mean(modulation_results['preferred_distance']).tolist(),

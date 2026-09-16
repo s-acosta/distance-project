@@ -35,26 +35,45 @@ class DisparityCellVisualizer(CellVizBase):
         return [LinearSegmentedColormap.from_list(f'disp{i}', ['white', c])
                 for i, c in enumerate(self._disparity_colors())]
 
-    def make_disparity_plot(self, cell, units='deg', fig=None):
+    def make_disparity_plot(self, cell, units='deg', fig=None, mono_rf=None,
+                            xlim=None, fontscale=1.0):
         """
         Two wide rows: the top row is one raw trial heatmap per disparity (in that
-        disparity's color intensity); the bottom row spans the same width with
-        three summaries: mean vs right-eye position (the fixed/absolute reference),
-        mean vs left-eye position (disparity-shifted), and a boxplot of the
-        per-trial peak amplitude by disparity.
+        disparity's color intensity); the bottom row spans the same width with the
+        mean traces and a boxplot of the per-trial peak amplitude by disparity.
+
+        In ``units='px'`` both eyes share one signed axis (left negative, right
+        positive) -- the frame :meth:`CellVisualizer.make_comparison_plot` uses --
+        so the two halves of the combined figure can be read down a single column.
+        Each disparity's mean trace is drawn twice there, once at the pixel the
+        left stimulus occupied and once at the right, which is where it actually
+        was on screen. In ``units='deg'`` the two eyes keep separate panels.
 
         Parameters
         ----------
         units : {'deg', 'px'}
-            x-axis units for the two mean overlays: visual angle (default) or
-            screen pixels (right eye fixed, left eye disparity-aware). The
-            heatmaps and the boxplot are unaffected.
+            x-axis units for the mean overlays: visual angle (default), or screen
+            pixels on the joint signed axis. Heatmaps and boxplot are unaffected.
         fig : Figure or SubFigure, optional
             Draw into this instead of creating a new figure (used by the combined
             monocular+binocular view).
+        mono_rf : (left_px, right_px), optional
+            The cell's monocular RF positions, marked on the joint panel. The
+            disparity whose left curve peaks on the left marker while its right
+            curve sits on the right marker is the cell's preferred one.
+        xlim : (lo, hi), optional
+            Force the joint panel's x range, e.g. to the monocular session's, so
+            the two halves of the combined figure line up.
+        fontscale : float
+            Multiplies every font size. The combined figure draws this plot much
+            larger than it draws standalone, so it passes a value above 1 to keep
+            the labels legible next to the monocular half.
         """
         if units not in ('deg', 'px'):
             raise ValueError("units must be 'deg' or 'px'")
+
+        def fs(size):
+            return size * fontscale
 
         vmin, vmax = self._vlimits(cell)
         disparities = self.device.disparities          # sorted ascending
@@ -82,42 +101,62 @@ class DisparityCellVisualizer(CellVizBase):
             ax = fig.add_subplot(gs[0, i * 3:(i + 1) * 3])
             ax.pcolor(self.device.get_all_traces(cell, disparity=d),
                       vmin=vmin, vmax=vmax, cmap=cmap)
-            ax.set_title(f'Disparity {d:+d}°', fontsize=18)
-            ax.set_xlabel('Time (frames)', fontsize=13)
+            ax.set_title(f'Disparity {d:+d}°', fontsize=fs(18))
+            ax.set_xlabel('Time (frames)', fontsize=fs(14))
+            ax.tick_params(axis='both', which='major', labelsize=fs(12))
             if i == 0:
-                ax.set_ylabel('Trial', fontsize=14)
+                ax.set_ylabel('Trial', fontsize=fs(15))
 
-        # --- bottom row: three full-width summaries ---
-        ax_right = fig.add_subplot(gs[1, 0:n])
-        ax_left = fig.add_subplot(gs[1, n:2 * n])
+        # --- bottom row ---
         ax_box = fig.add_subplot(gs[1, 2 * n:3 * n])
 
-        # x-values per eye: angle, or the eye's screen pixels (left is disparity-aware)
-        def x_right(d):
-            return self.device.get_px_range('right', d) if units == 'px' else angle
-        def x_left(d):
-            return self.device.get_px_range('left', d) if units == 'px' else angle - d
-
-        for d, color in zip(disparities, colors):
-            m, s = means[d]
-            xr, xl = x_right(d), x_left(d)
-            ax_right.plot(xr, m, color=color, linewidth=2, label=f'{d:+d}°')
-            ax_right.fill_between(xr, m - s, m + s, color=color, alpha=0.12)
-            ax_left.plot(xl, m, color=color, linewidth=2, label=f'{d:+d}°')
-            ax_left.fill_between(xl, m - s, m + s, color=color, alpha=0.12)
-        unit_lbl = 'pixel' if units == 'px' else 'angle (deg)'
-        for ax, title, xlabel in ((ax_right, f'Mean vs right-eye {unit_lbl} (absolute)', f'Right-eye {unit_lbl}'),
-                                  (ax_left, f'Mean vs left-eye {unit_lbl}', f'Left-eye {unit_lbl}')):
-            ax.set_title(title, fontsize=14)
-            ax.set_xlabel(xlabel, fontsize=13)
-            ax.set_ylabel('Activity (z)', fontsize=13)
-            ax.set_ylim(ylo, yhi)
-        ax_right.legend(title='disp', fontsize=9, title_fontsize=10, frameon=False)
+        if units == 'px':
+            ax_j = fig.add_subplot(gs[1, 0:2 * n])
+            for d, color in zip(disparities, colors):
+                m, s = means[d]
+                for eye in ('left', 'right'):
+                    x = self.device.get_px_range(eye, d)
+                    ax_j.plot(x, m, color=color, linewidth=2,
+                              label=f'{d:+d}°' if eye == 'right' else None)
+                    ax_j.fill_between(x, m - s, m + s, color=color, alpha=0.12)
+            ax_j.axvline(0, color='0.6', linewidth=1)     # nasal edge, where the panels meet
+            if mono_rf is not None:
+                lrf, rrf = mono_rf
+                ax_j.axvline(lrf, color='red', ls='--', lw=1.6)
+                ax_j.axvline(rrf, color='blue', ls='--', lw=1.6)
+                ax_j.text(lrf, yhi, f' mono L {lrf:.0f}px', color='red', fontsize=fs(13), va='top')
+                ax_j.text(rrf, yhi, f' mono R {rrf:.0f}px', color='blue', fontsize=fs(13), va='top')
+            ax_j.set_title('Mean ± SEM vs joint screen pixel', fontsize=fs(17))
+            ax_j.set_xlabel('Screen pixel (left panel negative, right positive)', fontsize=fs(15))
+            ax_j.set_ylabel('Activity (z)', fontsize=fs(15))
+            ax_j.set_ylim(ylo, yhi)
+            ax_j.tick_params(axis='both', which='major', labelsize=fs(13))
+            if xlim is not None:
+                ax_j.set_xlim(*xlim)
+            ax_j.legend(title='disp', fontsize=fs(11), title_fontsize=fs(12),
+                        frameon=False, ncol=2)
+        else:
+            ax_right = fig.add_subplot(gs[1, 0:n])
+            ax_left = fig.add_subplot(gs[1, n:2 * n])
+            for d, color in zip(disparities, colors):
+                m, s = means[d]
+                ax_right.plot(angle, m, color=color, linewidth=2, label=f'{d:+d}°')
+                ax_right.fill_between(angle, m - s, m + s, color=color, alpha=0.12)
+                ax_left.plot(angle - d, m, color=color, linewidth=2)
+                ax_left.fill_between(angle - d, m - s, m + s, color=color, alpha=0.12)
+            for ax, title in ((ax_right, 'Mean vs right-eye angle (absolute)'),
+                              (ax_left, 'Mean vs left-eye angle')):
+                ax.set_title(title, fontsize=fs(17))
+                ax.set_xlabel('Angle (deg)', fontsize=fs(15))
+                ax.set_ylabel('Activity (z)', fontsize=fs(15))
+                ax.set_ylim(ylo, yhi)
+                ax.tick_params(axis='both', which='major', labelsize=fs(13))
+            ax_right.legend(title='disp', fontsize=fs(11), title_fontsize=fs(12), frameon=False)
 
         # peak-amplitude boxplot per disparity (distance-plot style)
         rf_values = [self.device.find_rf_values(cell, disparity=d) for d in disparities]
         bp = ax_box.boxplot(rf_values, patch_artist=True,
-                            labels=[f'{d:+d}' for d in disparities], showfliers=False)
+                            tick_labels=[f'{d:+d}' for d in disparities], showfliers=False)
         for element in ['boxes', 'whiskers', 'caps', 'medians']:
             for item in bp[element]:
                 item.set_color('black')
@@ -127,12 +166,13 @@ class DisparityCellVisualizer(CellVizBase):
         for i, vals in enumerate(rf_values):
             x = np.random.normal(i + 1, 0.05, size=len(vals))
             ax_box.scatter(x, vals, alpha=0.8, color=colors[i], s=30)
-        ax_box.set_title('Peak amplitude', fontsize=14)
-        ax_box.set_xlabel('Disparity (deg)', fontsize=13)
-        ax_box.set_ylabel('Activity (z)', fontsize=13)
+        ax_box.set_title('Peak amplitude', fontsize=fs(17))
+        ax_box.set_xlabel('Disparity (deg)', fontsize=fs(15))
+        ax_box.set_ylabel('Activity (z)', fontsize=fs(15))
+        ax_box.tick_params(axis='both', which='major', labelsize=fs(13))
 
         if own_fig:
-            fig.suptitle(f'Cell {cell}', fontsize=20)
+            fig.suptitle(f'Cell {cell}', fontsize=fs(20))
         return fig
 
     def rf_table(self, cell, do_print=True):

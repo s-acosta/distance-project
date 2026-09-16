@@ -1,7 +1,8 @@
 % Generate position_order and positions CSVs matching teensyRandomPositionStim output.
 % Edit parameters below to match your experiment call, then run once.
 
-positions   = linspace(20, 220, 8);   % same default as teensyRandomPositionStim
+positions   = linspace(0, 120, 8);    % must match the positions= passed at the rig;
+                                      % NOT the script default (a single position, 50)
 n_positions = length(positions);
 n_repeats   = 10;                       % same default as teensyRandomPositionStim
 

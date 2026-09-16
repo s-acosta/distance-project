@@ -20,10 +20,17 @@ function stim_log = teensyStimulusAngle(opts)
 % Implemented as left_px(deg - disparity_deg): with left_slope>0 and nasal=pixel 0,
 % a negative disparity increases left_px (nasal), a positive disparity decreases it (temporal).
 %
-% Set opts.monocular=true to instead present ONE eye per trial (the other stays
-% gray), alternating eyes like teensyStimulusMonocular. Each eye sweeps its own
-% fit's pixel range; disparity is ignored (D=0). Trials = 2*n_repeats (per eye),
-% and stim_log.eye_order (1=right, 2=left) records the active eye per trial.
+% opts.mode selects which trial types make up the session:
+%   "binocular" - both eyes every trial, one condition per entry in opts.disparities
+%   "monocular" - ONE eye per trial (the other stays gray), disparity ignored (D=0);
+%                 each eye sweeps its own fit's pixel range, like teensyStimulusMonocular
+%   "mixed"     - binocular disparity trials AND monocular trials in the same session,
+%                 drawn from one shuffled condition list so they are intermingled
+%
+% A monocular trial is exactly the D=0 binocular trial with one eye blanked: same
+% angle sweep, same per-eye fit, same ball. So the D=0 binocular condition doubles
+% as the "both eyes" reference for the monocular ones. Monocular conditions get
+% opts.mono_repeats trials per eye (default: opts.n_repeats).
 %
 % Left screen is the negative pixel axis, right screen the positive axis; both
 % meet at an inner (nasal) edge of 0. Frames are precomputed with make_ball_frame;
@@ -35,7 +42,8 @@ function stim_log = teensyStimulusAngle(opts)
 %                                   'right_slope', 0.88, 'right_intercept', 64.4)
 %   stim_log = teensyStimulusAngle('disparities', [-10 0 10])  % uses default fits; snapshot shows automatically
 %   stim_log = teensyStimulusAngle('preview', true)
-%   stim_log = teensyStimulusAngle('monocular', true)
+%   stim_log = teensyStimulusAngle('mode', 'monocular')
+%   stim_log = teensyStimulusAngle('mode', 'mixed', 'mono_repeats', 20)
 %
 % Fit parameters (opts, all optional — defaults below are placeholders, override
 % with your recovered calibration):
@@ -43,7 +51,9 @@ function stim_log = teensyStimulusAngle(opts)
 %   opts.right_slope, opts.right_intercept - right-eye deg->pixel fit
 %
 % Returns:
-%   stim_log.trial_disparity_deg(i) - Left-eye disparity for trial i (degrees)
+%   stim_log.trial_disparity_deg(i) - Left-eye disparity for trial i (degrees; 0 if monocular)
+%   stim_log.trial_kind(i)          - 1 = binocular trial, 2 = monocular trial
+%   stim_log.trial_eye(i)           - Active eye: 0 = both, 1 = right only, 2 = left only
 %   stim_log.lead_eye(i)            - Which eye was sent first (1=right, 2=left)
 %   stim_log.trial_start(i)         - Start time of trial i (seconds)
 %   stim_log.pre_start(i)           - Start of PRE phase
@@ -61,7 +71,10 @@ arguments
     opts.end_deg       (1,1) double = 30         % Fixed sweep end (deg)
     opts.stim_size     (1,1) double = 30
     opts.disparities   (1,:) double = [-12 -8 -4 0 4 8 12]          % LEFT-eye disparity offsets (degrees); ignored if monocular
-    opts.monocular     (1,1) logical = false     % One eye per trial (other gray), alternating eyes; disparity ignored (D=0)
+    opts.mode          (1,1) string {mustBeMember(opts.mode, ["binocular","monocular","mixed"])} = "binocular"
+    opts.monocular     (1,1) logical = false     % DEPRECATED: equivalent to mode="monocular"
+    opts.mono_repeats  (1,:) double = []         % Repeats per monocular eye condition (default: n_repeats)
+    opts.rng_seed      (1,1) double = 0          % Seed for the trial-order shuffle
     opts.stim_duration (1,1) double = 6.0        % Stimulus duration (s); num_stim_frames = stim_duration * target_fps
     opts.rcycles       (1,1) double = 1          % Radial cycles in checkerboard
     opts.tcycles       (1,1) double = 2          % Angular cycles in checkerboard
@@ -86,17 +99,80 @@ arguments
     opts.verbose       (1,1) logical = true
 end
 
-n_disp          = length(opts.disparities);
+% === MODE ===
+mode_str = string(opts.mode);
+if opts.monocular && mode_str == "binocular"
+    mode_str = "monocular";      % back-compat with the old opts.monocular flag
+end
+do_binocular = any(mode_str == ["binocular" "mixed"]);
+do_monocular = any(mode_str == ["monocular" "mixed"]);
+
+n_disp          = numel(opts.disparities);
 frame_interval  = 1 / opts.target_fps;
 num_stim_frames = round(opts.stim_duration * opts.target_fps);
 stim_duration   = num_stim_frames / opts.target_fps;  % actual duration after rounding
 trial_dur       = opts.pre_time + stim_duration + opts.post_time;
-if opts.monocular
-    total_trials = 2 * opts.n_repeats;   % n_repeats per eye
+
+if isempty(opts.mono_repeats)
+    mono_repeats = opts.n_repeats;
 else
-    total_trials = opts.n_repeats * n_disp;
+    mono_repeats = opts.mono_repeats;
 end
-total_dur       = trial_dur * total_trials;
+
+% === LEFT-EYE FRAME SETS ===
+% One precomputed left-eye frame array per distinct disparity. Monocular-left trials are
+% always D=0, so that set is appended if the disparity list doesn't already contain it.
+if do_binocular
+    left_disp_list = opts.disparities;
+else
+    left_disp_list = [];
+end
+if do_monocular && ~any(left_disp_list == 0)
+    left_disp_list(end+1) = 0;
+end
+if isempty(left_disp_list)
+    left_disp_list = 0;
+end
+n_left_sets  = numel(left_disp_list);
+zero_set_idx = find(left_disp_list == 0, 1);
+if do_binocular
+    disp_set_idx = arrayfun(@(d) find(left_disp_list == d, 1), opts.disparities);
+else
+    disp_set_idx = [];
+end
+
+% === CONDITION TABLE ===
+% One row per condition; cond_list expands it into the shuffled trial sequence, so
+% binocular and monocular trials are intermingled rather than blocked.
+%   cond_kind 1 = binocular (both eyes, disparity D), 2 = monocular (one eye, D=0)
+%   cond_eye  0 = both eyes, 1 = right only, 2 = left only
+cond_kind = []; cond_eye = []; cond_dispidx = []; cond_D = []; cond_reps = [];
+if do_binocular
+    cond_kind    = [cond_kind,    ones(1, n_disp)];
+    cond_eye     = [cond_eye,     zeros(1, n_disp)];
+    cond_dispidx = [cond_dispidx, disp_set_idx];
+    cond_D       = [cond_D,       opts.disparities];
+    cond_reps    = [cond_reps,    repmat(opts.n_repeats, 1, n_disp)];
+end
+if do_monocular
+    cond_kind    = [cond_kind,    2 2];
+    cond_eye     = [cond_eye,     1 2];                       % right-only, left-only
+    cond_dispidx = [cond_dispidx, zero_set_idx zero_set_idx];
+    cond_D       = [cond_D,       0 0];
+    cond_reps    = [cond_reps,    mono_repeats mono_repeats];
+end
+
+n_cond       = numel(cond_kind);
+cond_list    = repelem(1:n_cond, cond_reps);
+total_trials = numel(cond_list);
+if opts.shuffle
+    rng(opts.rng_seed);
+    cond_list = cond_list(randperm(total_trials));
+end
+total_dur = trial_dur * total_trials;
+
+% Lead-eye alternates every trial: 1=right leads, 2=left leads
+lead_seq = mod((0:total_trials-1), 2) + 1;
 
 % Visual angle for each stimulus frame (same for every trial)
 angles = linspace(opts.start_deg, opts.end_deg, num_stim_frames);
@@ -145,13 +221,7 @@ end
 
 % Left eye (one array per disparity condition): left_pixel = left_px(deg - D_deg), in [-W, 0]
 % Ball is visible when left_pixel in [-W, 0]; pass -left_pixel to make_ball_frame (flips direction)
-% Monocular ignores disparity, so only the D=0 set is built (index 1).
-if opts.monocular
-    left_disp_list = 0;
-else
-    left_disp_list = opts.disparities;
-end
-n_left_sets = numel(left_disp_list);
+% left_disp_list / n_left_sets are built above alongside the condition table.
 left_eye_frames_by_disparity   = cell(1, n_left_sets);
 left_eye_payloads_by_disparity = cell(1, n_left_sets);
 for disparity_idx = 1:n_left_sets
@@ -182,53 +252,31 @@ for disparity_idx = 1:n_left_sets
     end
 end
 
-% === TRIAL ORDER ===
-if opts.monocular
-    % Alternating pairs [R,L],[L,R],... so each eye gets n_repeats trials,
-    % never the same eye more than twice in a row (1=right active, 2=left active)
-    eye_seq = zeros(1, total_trials);
-    for p = 1:opts.n_repeats
-        idx = (p-1)*2 + 1;
-        if mod(p, 2) == 1
-            eye_seq(idx:idx+1) = [1, 2];
-        else
-            eye_seq(idx:idx+1) = [2, 1];
-        end
-    end
-    cond_list = ones(1, total_trials);   % always the D=0 left set (index 1)
-else
-    cond_list = repelem(1:n_disp, opts.n_repeats);
-    if opts.shuffle
-        rng(0);
-        cond_list = cond_list(randperm(total_trials));
-    end
-end
-
-% Lead-eye alternates every trial: 1=right leads, 2=left leads
-lead_seq = mod((0:total_trials-1), 2) + 1;
-
 if opts.verbose
     fprintf('\n=== Teensy Angle-Based Stimulus ===\n');
-    if opts.monocular
-        fprintf('Mode: MONOCULAR (one eye per trial, disparity ignored)\n');
-    else
-        fprintf('Mode: BINOCULAR\n');
-    end
+    fprintf('Mode: %s\n', upper(mode_str));
     fprintf('Angle sweep: %.1f to %.1f deg\n', opts.start_deg, opts.end_deg);
-    if opts.monocular
-        fprintf('n_repeats per eye: %d | Total trials: %d\n', opts.n_repeats, total_trials);
-        fprintf('Active eye per trial (1=R,2=L): %s\n', mat2str(eye_seq));
-    else
-        fprintf('Left-eye disparities: %s deg\n', mat2str(opts.disparities));
-        fprintf('n_repeats per condition: %d | Total trials: %d\n', opts.n_repeats, total_trials);
+    if do_binocular
+        fprintf('Binocular: disparities %s deg | %d repeats each (%d trials)\n', ...
+            mat2str(opts.disparities), opts.n_repeats, opts.n_repeats * n_disp);
     end
+    if do_monocular
+        fprintf('Monocular: right-only + left-only | %d repeats each (%d trials)\n', ...
+            mono_repeats, 2 * mono_repeats);
+    end
+    fprintf('Total trials: %d\n', total_trials);
     fprintf('Trial structure: PRE %.1fs | STIM %.2fs | POST %.1fs (%.2fs total)\n', ...
         opts.pre_time, stim_duration, opts.post_time, trial_dur);
     fprintf('Total experiment: %.1f s (%.1f min)\n', total_dur, total_dur/60);
-    fprintf('Shuffle: %s\n', string(opts.shuffle));
-    if ~opts.monocular
-        fprintf('Condition order (disparity deg): %s\n', mat2str(opts.disparities(cond_list)));
-    end
+    fprintf('Shuffle: %s (seed %d)\n', string(opts.shuffle), opts.rng_seed);
+
+    kind_chars = repmat('B', 1, total_trials);
+    kind_chars(cond_kind(cond_list) == 2) = 'M';
+    fprintf('Trial kinds (B=binocular, M=monocular): %s\n', kind_chars);
+
+    disp_print = cond_D(cond_list);
+    disp_print(cond_kind(cond_list) == 2) = NaN;
+    fprintf('Trial disparity (deg, NaN=monocular): %s\n', mat2str(disp_print));
     fprintf('Lead eye per trial (1=R,2=L): %s\n', mat2str(lead_seq));
     if opts.preview
         fprintf('MODE: PREVIEW (screen only, no Teensy)\n');
@@ -271,11 +319,7 @@ end
 % === INITIALIZE LOG ===
 stim_log = struct();
 stim_log.parameters          = opts;
-if opts.monocular
-    stim_log.mode = 'monocular';
-else
-    stim_log.mode = 'binocular';
-end
+stim_log.mode                = char(mode_str);
 stim_log.left_fit            = [opts.left_slope, opts.left_intercept];
 stim_log.right_fit           = [opts.right_slope, opts.right_intercept];
 stim_log.start_deg           = opts.start_deg;
@@ -283,12 +327,14 @@ stim_log.end_deg             = opts.end_deg;
 stim_log.angles              = angles;
 stim_log.stim_size           = opts.stim_size;
 stim_log.disparities         = opts.disparities;
-if opts.monocular
-    stim_log.eye_order        = eye_seq;                  % 1=right active, 2=left active
-    stim_log.trial_disparity_deg = zeros(1, total_trials);
-else
-    stim_log.trial_disparity_deg = opts.disparities(cond_list);
-end
+stim_log.cond_kind           = cond_kind;            % per condition: 1=binocular, 2=monocular
+stim_log.cond_eye            = cond_eye;             % per condition: 0=both, 1=right, 2=left
+stim_log.cond_disparity_deg  = cond_D;
+stim_log.trial_cond          = cond_list;            % condition index per trial
+stim_log.trial_kind          = cond_kind(cond_list); % 1=binocular, 2=monocular
+stim_log.trial_eye           = cond_eye(cond_list);  % 0=both, 1=right only, 2=left only
+stim_log.eye_order           = cond_eye(cond_list);  % back-compat alias for the old monocular log
+stim_log.trial_disparity_deg = cond_D(cond_list);    % 0 on monocular trials
 stim_log.lead_eye            = lead_seq;
 stim_log.trial_start         = zeros(1, total_trials);
 stim_log.pre_start           = zeros(1, total_trials);
@@ -306,8 +352,8 @@ stim_log.right_eye_end_px    = nan(1, total_trials);
 % rendered left/right eye frames. Right eye is shared across conditions, so its column is identical
 % every row while the left ball shifts with disparity -- that is the thing to eyeball. Reuses the
 % precomputed frames, so no hardware and no re-rendering.
-show_snapshot = opts.snapshot && ~opts.monocular && ...
-                (numel(opts.disparities) > 1 || any(opts.disparities ~= 0));
+show_snapshot = opts.snapshot && do_binocular && ...
+                (n_disp > 1 || any(opts.disparities ~= 0));
 if show_snapshot
     [~, snap_idx] = min(abs(angles - opts.snapshot_angle));
     snap_angle    = angles(snap_idx);            % actual nearest sampled angle
@@ -326,7 +372,7 @@ if show_snapshot
     figure('Name', 'Disparity Snapshot', 'NumberTitle', 'off');
     for k = 1:n_disp
         D       = opts.disparities(k);
-        frame_L = left_eye_frames_by_disparity{k}{snap_idx};
+        frame_L = left_eye_frames_by_disparity{disp_set_idx(k)}{snap_idx};
         lpx     = left_px(snap_angle - D);
         if lpx < -opts.W || lpx > 0, off_lbl = ' (off)'; else, off_lbl = ''; end
         if D < 0, sense = ' crossed/near'; elseif D > 0, sense = ' uncrossed/far'; else, sense = ' zero'; end
@@ -370,20 +416,16 @@ end
 
 % === MAIN TRIAL LOOP ===
 for trial = 1:total_trials
-    d_idx  = cond_list(trial);
+    c      = cond_list(trial);
+    d_idx  = cond_dispidx(c);
     lead   = lead_seq(trial);
 
     % Which eyes are active this trial, and the left-eye disparity in play
-    if opts.monocular
-        active_eye = eye_seq(trial);        % 1=right, 2=left
-        right_on   = (active_eye == 1);
-        left_on    = (active_eye == 2);
-        D_deg      = 0;                      % disparity ignored in monocular
-    else
-        right_on   = true;
-        left_on    = true;
-        D_deg      = opts.disparities(d_idx);
-    end
+    is_mono    = (cond_kind(c) == 2);
+    active_eye = cond_eye(c);                  % 0=both, 1=right, 2=left
+    right_on   = (active_eye == 0) || (active_eye == 1);
+    left_on    = (active_eye == 0) || (active_eye == 2);
+    D_deg      = cond_D(c);
 
     % Per-eye frame/payload sources for the STIM phase (used only when the eye is on)
     current_right_payloads = right_eye_payloads;
@@ -393,12 +435,12 @@ for trial = 1:total_trials
 
     if opts.verbose
         lead_str = 'right'; if lead == 2, lead_str = 'left'; end
-        if opts.monocular
+        if is_mono
             eye_str = 'right'; if left_on, eye_str = 'left'; end
-            fprintf('--- Trial %d/%d | active eye=%s | lead=%s ---\n', ...
+            fprintf('--- Trial %d/%d | MONOCULAR %s eye | lead=%s ---\n', ...
                 trial, total_trials, eye_str, lead_str);
         else
-            fprintf('--- Trial %d/%d | left disparity=%+.1f deg | lead=%s ---\n', ...
+            fprintf('--- Trial %d/%d | BINOCULAR disparity=%+.1f deg | lead=%s ---\n', ...
                 trial, total_trials, D_deg, lead_str);
         end
     end
@@ -449,14 +491,14 @@ for trial = 1:total_trials
     end
 
     if opts.preview
-        if opts.monocular
+        if is_mono
             if right_on, r_lbl = ' (active)'; else, r_lbl = ' (idle)'; end
             if left_on,  l_lbl = ' (active)'; else, l_lbl = ' (idle)'; end
-            title(ax_R, sprintf('T%d STIM%s', trial, r_lbl));
-            title(ax_L, sprintf('T%d STIM%s', trial, l_lbl));
+            title(ax_R, sprintf('T%d MONO%s', trial, r_lbl));
+            title(ax_L, sprintf('T%d MONO%s', trial, l_lbl));
         else
-            title(ax_R, sprintf('T%d STIM', trial));
-            title(ax_L, sprintf('T%d STIM (disp=%+.1f)', trial, D_deg));
+            title(ax_R, sprintf('T%d BINOC', trial));
+            title(ax_L, sprintf('T%d BINOC (disp=%+.1f)', trial, D_deg));
         end
     end
 

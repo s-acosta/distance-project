@@ -1,5 +1,7 @@
 import sys
 import os
+import io
+from contextlib import redirect_stdout
 sys.path.append(r"C:\Users\acostamendoza\projects\distance-project")                       # repo root: path_setup, utils
 sys.path.append(r"C:\Users\acostamendoza\projects\distance-project\disparity-analysis")    # so `src.*` = disparity's own
 from path_setup import setup_project_path
@@ -143,7 +145,11 @@ class SessionVisualizer:
         return f"{100 * k / n:5.1f}%" if n else "  n/a"
 
     def print_summary(self, corr_threshold=_UNSET):
-        """Print reliable-cell counts for the session (per eye and both).
+        """Print reliable-cell counts for the session.
+
+        For a both-eye session: how many cells are reliable in either eye, then
+        the right-only / left-only / both split *within* that reliable set, so
+        those three percentages sum to 100.
 
         ``corr_threshold`` overrides the instance's default mean_corr floor for
         this call only (``None`` disables filtering).
@@ -166,15 +172,119 @@ class SessionVisualizer:
             print(f" {self.device.eye.capitalize()+'-eye reliable':22s}: {r:4d}  ({self._pct(r, n)})")
             print(f" {'Not reliable':22s}: {len(sets['none']):4d}  ({self._pct(len(sets['none']), n)})")
         else:
-            print(f" {'Right reliable':22s}: {len(sets['right']):4d}  ({self._pct(len(sets['right']), n)})")
-            print(f" {'Left reliable':22s}: {len(sets['left']):4d}  ({self._pct(len(sets['left']), n)})")
-            print(f" {'Both eyes reliable':22s}: {len(sets['both']):4d}  ({self._pct(len(sets['both']), n)})")
+            n_rel = len(sets['either'])
+            print(f" {'Reliable (either eye)':22s}: {n_rel:4d}  ({self._pct(n_rel, n)} of all cells)")
             print("-" * 50)
-            print(f" {'Right-only':22s}: {len(sets['right_only']):4d}")
-            print(f" {'Left-only':22s}: {len(sets['left_only']):4d}")
-            print(f" {'Either eye':22s}: {len(sets['either']):4d}  ({self._pct(len(sets['either']), n)})")
-            print(f" {'Neither':22s}: {len(sets['none']):4d}  ({self._pct(len(sets['none']), n)})")
+            print(f" Among those {n_rel} reliable cells:")
+            print(f" {'Right eye only':22s}: {len(sets['right_only']):4d}  "
+                  f"({self._pct(len(sets['right_only']), n_rel)})")
+            print(f" {'Left eye only':22s}: {len(sets['left_only']):4d}  "
+                  f"({self._pct(len(sets['left_only']), n_rel)})")
+            print(f" {'Both eyes':22s}: {len(sets['both']):4d}  "
+                  f"({self._pct(len(sets['both']), n_rel)})")
         print(line)
+        return sets
+
+    def _text_figure(self, text, fontsize=13):
+        """
+        Render monospaced text as a bare figure, sized to the text itself.
+
+        Used to save a printed summary as a PNG so it opens like every other
+        figure in the report instead of needing a text editor.
+
+        A plain method, not a staticmethod: ``%autoreload 2`` cannot re-bind a
+        newly added staticmethod onto a class already live in the kernel, so it
+        arrives as a bare function with ``self`` as its first argument.
+        """
+        lines = text.splitlines() or ['']
+        char_w = fontsize * 0.60 / 72        # monospace advance width, inches
+        line_h = fontsize * 1.45 / 72
+        fig_w = max(len(l) for l in lines) * char_w + 0.5
+        fig_h = len(lines) * line_h + 0.4
+
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        fig.text(0.25 / fig_w, 1 - 0.2 / fig_h, text.strip(),
+                 family='monospace', fontsize=fontsize, va='top', ha='left',
+                 linespacing=1.45)
+        return fig
+
+    def save_report(self, out_dir=None, corr_threshold=_UNSET, dpi=150,
+                    cell_dpi=120, cell_viz=None, plot_cells=True):
+        """
+        Save the standard per-session report into the session's results folder.
+
+        Writes, under ``out_dir`` (default ``device.results_dir``)::
+
+            summary/summary.png        the text :meth:`print_summary` prints, as an image
+            summary/summary_plots.png  :meth:`plot_summary`
+            summary/location_map.png   :meth:`plot_location_map`
+            summary/corr_scatter.png   :meth:`plot_corr_scatter` (both-eye only)
+            right_only/cell_*.png      make_comparison_plot, right-only cells
+            left_only/cell_*.png       ... left-only cells
+            both/cell_*.png            ... cells reliable in both eyes
+
+        A single-eye session gets one ``reliable/`` folder instead, drawn with
+        ``make_eye_plot``, and no corr scatter (it compares the two eyes).
+
+        The right-only and left-only folders still use the two-eye comparison
+        plot on purpose: the flat trace in the non-driving eye is the evidence
+        that the cell really is monocular.
+
+        One ``corr_threshold`` gates the summary, the figures and the folders,
+        so the whole report describes a single cell selection; it is recorded in
+        summary.png. Pass ``plot_cells=False`` to write just the summary folder
+        and skip the per-cell figures, which are the slow part. For an
+        elevation session, build a ``CellVisualizer(device, stats_df=...,
+        elevation=...)`` yourself and pass it as ``cell_viz``, otherwise the
+        per-cell figures pool every elevation.
+
+        Returns the ``reliable_sets`` dict the report was built from.
+        """
+        from src.viz.CellVisualizer import CellVisualizer   # lazy: keeps the module graph flat
+
+        out_dir = out_dir or self.device.results_dir
+        summary_dir = os.path.join(out_dir, 'summary')
+        os.makedirs(summary_dir, exist_ok=True)
+
+        # the same text print_summary puts on screen, saved as an image so it can
+        # be flipped through alongside the other PNGs
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            sets = self.print_summary(corr_threshold)
+        text = buf.getvalue()
+        print(text, end='')
+
+        def _save(fig, name):
+            fig.savefig(os.path.join(summary_dir, name), dpi=dpi, bbox_inches='tight')
+            plt.close(fig)
+
+        _save(self._text_figure(text), 'summary.png')
+        _save(self.plot_summary(print_counts=False, corr_threshold=corr_threshold),
+              'summary_plots.png')
+        _save(self.plot_location_map(corr_threshold=corr_threshold), 'location_map.png')
+        if not self.device.single_eye:
+            _save(self.plot_corr_scatter(corr_threshold=corr_threshold), 'corr_scatter.png')
+        print(f'Saved summary to: {summary_dir}')
+
+        if not plot_cells:
+            return sets
+
+        viz = cell_viz or CellVisualizer(self.device, stats_df=self.compute_stats())
+        if self.device.single_eye:
+            groups = [('reliable', sets['reliable'], 'eye')]
+        else:
+            groups = [('right_only', sets['right_only'], 'comparison'),
+                      ('left_only', sets['left_only'], 'comparison'),
+                      ('both', sets['both'], 'comparison')]
+
+        for name, group, kind in groups:
+            if not group:
+                print(f'  {name}: no cells, skipped')
+                continue
+            viz.save_all_cells(out_dir=os.path.join(out_dir, name),
+                               kind=kind, dpi=cell_dpi, cells=group)
+
+        print(f'Report saved under: {out_dir}')
         return sets
 
     def print_params(self):

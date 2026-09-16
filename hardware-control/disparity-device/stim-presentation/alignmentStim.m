@@ -13,15 +13,15 @@ arguments
     opts.stim_size (1,1) double = 30           % ball diameter (pixels)
     opts.rcycles   (1,1) double = 1              % radial checkerboard cycles
     opts.tcycles   (1,1) double = 2              % angular checkerboard cycles
-    opts.PORT      (1,1) string = "COM5"
+    opts.PORT      (1,1) string = "COM7"
     opts.baud      (1,1) double = 115200
     opts.H         (1,1) double = 240
     opts.W         (1,1) double = 240
     opts.target_fps(1,1) double = 10
-    opts.eye       (1,1) string  = "none"        % eye orientation: "none", "left" (+90°), "right" (-90°)
+    opts.eye       (1,1) string  = "right"        % eye orientation: "none", "left" (+90°), "right" (-90°)
     opts.preview   (1,1) logical = false
     opts.bw        (1,1) logical = false         % black background, white balls
-    opts.brightness(1,1) double  = 1.0           % overall luminance scale (0=black, 1=full brightness)
+    opts.brightness(1,1) double  = 0.6           % overall luminance scale (0=black, 1=full brightness)
 end
 
 %% Build frame with two balls
@@ -103,11 +103,11 @@ function frame = place_ball(frame, x_pos, stim_size, W, H, rcycles, tcycles, bw,
 end
 
 function frame = rotate_for_eye(frame, eye)
-    if strcmp(eye, 'left')
-        frame = flip(frame, 2);    % invert x axis: position 0 → rightmost
-        frame = rot90(frame, -1);   % +90° CCW
-    elseif strcmp(eye, 'right')
-        frame = rot90(frame, 1);  % -90° CW
+    if strcmp(eye, 'right')
+        frame = flip(frame, 2);    % invert x axis: position 0 -> rightmost
+        frame = rot90(frame, -1);  % -90 deg CW
+    elseif strcmp(eye, 'left')
+        frame = rot90(frame, 1);   % +90 deg CCW
     end
 end
 

@@ -335,10 +335,10 @@ end
 
 function frame = rotate_for_eye(frame, eye)
     if strcmp(eye, 'right')
-        frame = flip(frame, 2);    % invert x axis: position 0 → rightmost
-        frame = rot90(frame, 1);   % +90° CCW
+        frame = flip(frame, 2);    % invert x axis: position 0 -> rightmost
+        frame = rot90(frame, -1);  % -90 deg CW
     elseif strcmp(eye, 'left')
-        frame = rot90(frame, -1);  % -90° CW
+        frame = rot90(frame, 1);   % +90 deg CCW
     end
 end
 

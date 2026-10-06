@@ -18,7 +18,7 @@ class CrossSessionVisualizer:
     sessions share a `cell_id` space, e.g. split from the same suite2p run).
     """
 
-    def __init__(self, session_vizs):
+    def __init__(self, session_vizs, stats=None):
         """
         Parameters
         ----------
@@ -29,8 +29,16 @@ class CrossSessionVisualizer:
             Example:
                 [('temporal', CellVisualizer(device_temporal)),
                  ('nasal',    CellVisualizer(device_nasal))]
+        stats : dict of str -> pd.DataFrame, optional
+            Session DataFrames (from `analyze_session` / `SessionAnalyzer`), keyed by
+            the same labels. If given, each cell's stats are read from these instead
+            of re-running `analyze_cell_stats`: much faster, and the figure then agrees
+            with the saved tables (the reliability and bootstrap tests are random).
         """
         self.session_vizs = list(session_vizs)
+        self.stats = None if stats is None else {
+            label: df.set_index('cell_id') for label, df in stats.items()
+        }
 
     def _build_rows(self, conditions=None):
         """Returns a list of (label, viz, condition) tuples, one per row to draw.
@@ -50,7 +58,7 @@ class CrossSessionVisualizer:
                 rows.append((label, viz, {'monocular': False, 'title': 'binocular'}))
         return rows
 
-    def plot_cell(self, cell, shared_scale=True, conditions=None):
+    def plot_cell(self, cell, shared_scale=True, conditions=None, show_condition=True):
         """
         Create a stacked comparison figure for one cell across all sessions.
 
@@ -69,6 +77,9 @@ class CrossSessionVisualizer:
             every condition available in each session is drawn (previous behavior).
             "Reliable General" in the stats column still reflects the full session
             (both conditions), not just whichever rows are shown.
+        show_condition : bool, optional
+            If False, rows are titled by session label only (e.g. left / both /
+            right-eye sessions that are all flagged binocular). Default True.
 
         Returns
         -------
@@ -97,7 +108,10 @@ class CrossSessionVisualizer:
             if has_binocular:
                 conditions.append({'monocular': False, 'title': 'binocular'})
 
-            results = viz.analyzer.analyze_cell_stats(cell)
+            if self.stats is not None:
+                results = self.stats[label].loc[cell].to_dict()
+            else:
+                results = viz.analyzer.analyze_cell_stats(cell)
             session_results[label] = results
             session_reliable[label] = any(results[c['title']]['reliable'] for c in conditions)
 
@@ -116,7 +130,7 @@ class CrossSessionVisualizer:
             viz._draw_condition_row(
                 fig, axs, row_idx, cell, condition,
                 session_results[label], session_reliable[label],
-                row_vmin, row_vmax, row_label=label,
+                row_vmin, row_vmax, row_label=label, show_condition=show_condition,
             )
 
         labels_str = ' vs '.join(label for label, _ in self.session_vizs)

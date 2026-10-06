@@ -267,7 +267,8 @@ class CellVisualizer:
 
         return fig
 
-    def _draw_condition_row(self, fig, axs, row_idx, cell, condition, results, reliable, vmin, vmax, row_label=None):
+    def _draw_condition_row(self, fig, axs, row_idx, cell, condition, results, reliable, vmin, vmax, row_label=None,
+                            show_condition=True):
         """
         Draw one condition's row (all-traces heatmap, polar mean plot, tuning curve,
         RF boxplot, stats text) into an existing axes grid built like the one in
@@ -294,6 +295,9 @@ class CellVisualizer:
         row_label : str, optional
             Prefix added to panel titles (e.g. a session name), for stacking rows from
             multiple sessions in one figure. Omit for single-session behavior.
+        show_condition : bool, optional
+            If False and `row_label` is given, panel titles show only `row_label`
+            (e.g. sessions that differ by eye but are all flagged binocular).
         """
 
         # Get cell index
@@ -303,7 +307,12 @@ class CellVisualizer:
         distances_with_control = [0, 1, 2, 3, 4]
         distances_without_control = [0, 1, 2, 3]
 
-        title_prefix = f'{row_label} - ' if row_label else ''
+        if not row_label:
+            row_title = condition['title']
+        elif show_condition:
+            row_title = f'{row_label} - {condition["title"]}'
+        else:
+            row_title = row_label
 
         results_condition = results[condition['title']]
 
@@ -336,7 +345,7 @@ class CellVisualizer:
 
         axs[row_idx, 0].set_xlabel('Time (frames)')
         axs[row_idx, 0].set_ylabel('Trials')
-        axs[row_idx, 0].set_title(f'{title_prefix}{condition["title"]} - All Traces', fontsize=14)
+        axs[row_idx, 0].set_title(f'{row_title} - All Traces', fontsize=14)
 
         # radial plot
         n_theta = len(self.device.angle_range)
@@ -358,14 +367,14 @@ class CellVisualizer:
         pcm = ax_polar.pcolormesh(theta_grid, r_grid, Z, shading='auto', cmap='viridis', vmin=vmin, vmax=vmax)
 
         # Optionally, copy over the title
-        ax_polar.set_title(f'{title_prefix}{condition["title"]} - Mean Traces', fontsize=14)
+        ax_polar.set_title(f'{row_title} - Mean Traces', fontsize=14)
 
         # Add axis for second subplot
         axs[row_idx, 2].set_xlabel('Degrees (deg)')
         axs[row_idx, 2].set_ylabel(self.device.response_mode)
-        axs[row_idx, 2].set_title(f'{title_prefix}{condition["title"]} - Mean Traces', fontsize=14)
-        # add vertical line at 30 degrees
-        axs[row_idx, 2].axvline(x=30, color='lightgray', linestyle='--', linewidth=2)
+        axs[row_idx, 2].set_title(f'{row_title} - Mean Traces', fontsize=14)
+        # vertical line at this condition's RF (peak of the mean trace over all distances)
+        axs[row_idx, 2].axvline(x=results_condition['RF'], color='lightgray', linestyle='--', linewidth=2)
         axs[row_idx, 2].set_ylim(vmin, vmax)
 
         # boxplot

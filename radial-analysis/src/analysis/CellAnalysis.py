@@ -48,6 +48,14 @@ class CellAnalyzer:
         has_binocular = len(self.device.get_condition_trials(monocular=False)) > 0
         return has_monocular, has_binocular
 
+    def _get_available_distances(self, monocular=None):
+        # stimulus distances actually shown (control excluded) -- not every session has all of 0-3
+        trials = self.device.get_condition_trials(monocular=monocular)
+        return np.unique(self.device.distance_sequence[trials])
+
+    def _has_control(self, monocular=None):
+        return len(self.device.get_condition_trials(monocular=monocular, distance=4)) > 0
+
     def compute_reliability(self, cell, distance=None, monocular=None, n_iterations=100):
         """
         Compute split-half reliability for a cell using correlation analysis.
@@ -157,15 +165,20 @@ class CellAnalyzer:
         corr, corr_shifted = self.compute_reliability(cell, distance=distance, monocular=monocular, n_iterations=n_iterations)
         stimulus_reliable = np.mean(corr) > np.percentile(corr_shifted, 99)
 
-        corr_control, corr_shifted_control = self.compute_reliability(cell, distance=4, monocular=monocular, n_iterations=n_iterations)
-        control_reliable = np.mean(corr_control) > np.percentile(corr_shifted_control, 99.9)
+        if self._has_control(monocular):
+            corr_control, corr_shifted_control = self.compute_reliability(cell, distance=4, monocular=monocular, n_iterations=n_iterations)
+            control_reliable = np.mean(corr_control) > np.percentile(corr_shifted_control, 99.9)
 
-        rf_values_distances = [np.mean(self.device.find_rf_values(cell, distance=distance, monocular=monocular)) for distance in [0, 1, 2, 3]]
-        rf_values_control = np.mean(self.device.find_rf_values(cell, distance=4, monocular=monocular))
+            rf_values_distances = [np.mean(self.device.find_rf_values(cell, distance=d, monocular=monocular)) for d in self._get_available_distances(monocular)]
+            rf_values_control = np.mean(self.device.find_rf_values(cell, distance=4, monocular=monocular))
 
-        # make sure that rf_values_distances are higher than rf_values_control, at least for three distances
-        control_comparison = [rf_values_control > rf_values for rf_values in rf_values_distances]
-        control_higher = np.sum(control_comparison) > 1
+            # make sure that rf_values_distances are higher than rf_values_control, at least for three distances
+            control_comparison = [rf_values_control > rf_values for rf_values in rf_values_distances]
+            control_higher = np.sum(control_comparison) > 1
+        else:
+            # no control trials in this session, so there is nothing to compare against
+            control_reliable = None
+            control_higher = False
 
         if corr_threshold is not None:
             reliable = stimulus_reliable and not (control_higher) and np.mean(corr) > corr_threshold
@@ -227,10 +240,12 @@ class CellAnalyzer:
         rf_idx = np.argmax(mean_trace)
         window_slice = slice(max(0, rf_idx - window_size), min(len(mean_trace), rf_idx + window_size + 1))
 
+        distances = self._get_available_distances(monocular)
+
         # Get number of repeats per distance and validate
         n_repeats_per_distance = [
             self.device.get_all_traces(cell, distance=d, monocular=monocular, mean_trace=False).shape[0]
-            for d in range(4)
+            for d in distances
         ]
 
         if len(set(n_repeats_per_distance)) != 1:
@@ -240,10 +255,10 @@ class CellAnalyzer:
         n_repeats = min(n_repeats_per_distance)
         n_halves = (n_repeats + 1) // 2  # Equivalent to ceil(n_repeats / 2)
 
-        # Pre-compute windowed mean traces for all distances: shape (4, n_repeats)
+        # Pre-compute windowed mean traces for all distances: shape (n_distances, n_repeats)
         trace_values = np.array([
             self.device.get_all_traces(cell, distance=d, monocular=monocular, mean_trace=False)[:n_repeats, window_slice].mean(axis=1)
-            for d in range(4)
+            for d in distances
         ])
 
         # Pre-generate all random permutations at once: shape (n_iterations, n_repeats)
@@ -253,8 +268,8 @@ class CellAnalyzer:
         ])
 
         # Vectorized computation of mean values for both halves across all iterations
-        # trace_values: (4, n_repeats), halves_matrix: (n_iterations, n_repeats)
-        # Result shapes: (n_iterations, 4)
+        # trace_values: (n_distances, n_repeats), halves_matrix: (n_iterations, n_repeats)
+        # Result shapes: (n_iterations, n_distances)
         mean_first_half = np.array([
             trace_values[:, mask].mean(axis=1) for mask in halves_matrix
         ])
@@ -262,17 +277,20 @@ class CellAnalyzer:
             trace_values[:, ~mask].mean(axis=1) for mask in halves_matrix
         ])
 
-        # Find preferred/least preferred distances from first half
-        preferred_distance = mean_first_half.argmax(axis=1)
-        least_preferred_distance = mean_first_half.argmin(axis=1)
+        # Find preferred/least preferred distances from first half (as indices into distances)
+        preferred_idx = mean_first_half.argmax(axis=1)
+        least_preferred_idx = mean_first_half.argmin(axis=1)
 
         # Calculate modulation index using second half values
         # Index into second half using the distances determined from first half
         iter_indices = np.arange(n_iterations)
-        pref_values = np.abs(mean_second_half[iter_indices, preferred_distance])
-        least_values = np.abs(mean_second_half[iter_indices, least_preferred_distance])
+        pref_values = np.abs(mean_second_half[iter_indices, preferred_idx])
+        least_values = np.abs(mean_second_half[iter_indices, least_preferred_idx])
 
         modulation_indices = (pref_values - least_values) / (pref_values + least_values + 1e-10)
+
+        preferred_distance = distances[preferred_idx]
+        least_preferred_distance = distances[least_preferred_idx]
 
         unique_vals, counts = np.unique(preferred_distance, return_counts=True)
         preferred_distance_consistency = (np.max(counts) / len(preferred_distance)) * 100
@@ -317,8 +335,7 @@ class CellAnalyzer:
         results = self.bootstrap_modulation(cell, monocular=monocular, n_iterations=n_iterations)
 
         # calculate the f_statistic and p_value
-        rf_values = [self.device.find_rf_values(cell, distance=distance, monocular=monocular) for distance in [0, 1, 2, 3, 4]]
-        distances_rf = [rf_values[i] for i in range(len(rf_values)-1)]
+        distances_rf = [self.device.find_rf_values(cell, distance=d, monocular=monocular) for d in self._get_available_distances(monocular)]
         f_stat, p_value = f_oneway(*distances_rf)
         results['anova_p_value'] = p_value
         results['anova_modulated'] = p_value < 0.05
@@ -401,15 +418,21 @@ class CellAnalyzer:
         rf = self.device.find_rf_position(cell, distance=None, monocular=None)
         ODI = self.analyze_ocular_dominance(cell)
 
-        rf_values = [np.mean(self.device.find_rf_values(cell, distance=i)) for i in range(4)]
-        all_distance = np.argmax(rf_values)
+        # distance tuning needs at least two distances; single-distance sessions
+        # still get RF, ODI and reliability, with the tuning fields left NaN
+        distances = self._get_available_distances()
+        if len(distances) > 1:
+            rf_values = [np.mean(self.device.find_rf_values(cell, distance=d)) for d in distances]
+            all_distance = distances[np.argmax(rf_values)].tolist()
+        else:
+            all_distance = np.nan
 
         results = {
             'cell_id': cell,
             'session_name': self.device.session_name,
             'ODI': ODI.tolist() if ODI is not None else None,
             'RF': rf.tolist(),
-            'distance': all_distance.tolist(),
+            'distance': all_distance,
             'monocular': None,
             'binocular': None,
         }
@@ -422,13 +445,24 @@ class CellAnalyzer:
 
         for condition, monocular in condition_map:
 
-            modulation_results = self.analyze_cell_modulation(cell, monocular=monocular)
             reliable_results = self.analyze_cell_reliability(cell, monocular=monocular, n_iterations=n_iterations)
 
             results[condition] = {
-                'RF': modulation_results['rf_position'][0].tolist(),
+                'RF': self.device.find_rf_position(cell, distance=None, monocular=monocular).tolist(),
                 'reliable': reliable_results['reliable'],
                 'reliable_corr': reliable_results['mean_corr'].tolist(),
+                'bootstrap_pvalue': np.nan,
+                'anova_pvalue': np.nan,
+                'consistency': np.nan,
+                'DTI': np.nan,
+                'distance': np.nan,
+            }
+
+            if len(self._get_available_distances(monocular)) < 2:
+                continue
+
+            modulation_results = self.analyze_cell_modulation(cell, monocular=monocular)
+            results[condition].update({
                 'bootstrap_pvalue': modulation_results['bootstrap_p_value'].tolist(),
                 # f_oneway returns a plain float nan when every group is constant,
                 # which sparse spike trains do produce -- so no .tolist() here.
@@ -436,7 +470,7 @@ class CellAnalyzer:
                 'consistency': modulation_results['preferred_distance_consistency'].tolist(),
                 'DTI': np.mean(modulation_results['modulation_index']).tolist(),
                 'distance': np.mean(modulation_results['preferred_distance']).tolist(),
-            }
+            })
 
         return results
 

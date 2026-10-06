@@ -17,6 +17,13 @@ function stim_data = radialDeviceControl_v2(motor_port, options)
 %   return_speed   - Speed for end->start movement (us), default: 10000
 %   monocular      - Enable monocular sequence blocks, default: false
 %   DAQ_flag       - Enable DAQ triggering, default: false
+%   reverse        - Keep the ball up on the way back and return at forward_speed,
+%                    so every trial also has a reverse sweep (end -> start);
+%                    trials are at least 12 s. Default: false
+%   time_per_trial - Seconds per trial, default: 8. Raised automatically when the
+%                    trial's movements (from the sweep range and speeds) don't fit.
+%
+% Every trial also logs return_start / return_end (the end -> start movement).
 
 arguments
     motor_port
@@ -33,6 +40,31 @@ arguments
     options.monocular = false;
     options.random_flag = true;
     options.DAQ_flag = false;
+    options.reverse = false;
+end
+
+% Make sure one trial's movements fit in time_per_trial. An overrun stretches every
+% trial, and a recording sized from time_per_trial then ends before the stimulus.
+% Movement time scales with angle x per-step delay: 60 deg at 28500 us took
+% 4.03-4.08 s, so 4.1 s is used. Servo moves add ~0.1 s of command pause + reply,
+% and the raise happens inside the off period.
+sweep_time = @(speed) abs(options.end_angle - options.start_angle) * speed * 4.1 / (60 * 28500);
+off_period = max(options.off_time, options.raise_time / 1000 + 0.1);
+lower_s = options.lower_time / 1000 + 0.1;
+if options.reverse
+    % forward sweep, hold, reverse sweep (ball up, forward speed), hold, lower
+    trial_content = off_period + 2 * sweep_time(options.forward_speed) + 0.5 + 0.5 + lower_s;
+    min_trial = max(12, ceil(trial_content + 0.3));
+else
+    % forward sweep, hold, lower, fast return
+    trial_content = off_period + sweep_time(options.forward_speed) + 0.5 + lower_s ...
+                    + sweep_time(options.return_speed);
+    min_trial = ceil(trial_content + 0.3);
+end
+if options.time_per_trial < min_trial
+    fprintf('time_per_trial raised from %g to %d s (one trial takes ~%.1f s)\n', ...
+            options.time_per_trial, min_trial, trial_content);
+    options.time_per_trial = min_trial;
 end
 
 %% Initialize DAQ
@@ -99,6 +131,15 @@ end
 off_start = zeros(1, options.n_repeats);
 on_start = zeros(1, options.n_repeats);
 on_end = zeros(1, options.n_repeats);
+return_start = zeros(1, options.n_repeats);
+return_end = zeros(1, options.n_repeats);
+
+% Reverse mode returns at the forward speed so both sweeps sample the same angles
+if options.reverse
+    return_speed = options.forward_speed;
+else
+    return_speed = options.return_speed;
+end
 
 
 % If monocular mode, inform user when to switch between monocular and binocular
@@ -145,6 +186,7 @@ fprintf('Off time: %.2f seconds\n', options.off_time);
 fprintf('Servo timing: raise=%dms, lower=%dms\n', options.raise_time, options.lower_time);
 fprintf('Stepper speeds: forward=%dus, return=%dus\n', options.forward_speed, options.return_speed);
 fprintf('DAQ triggering: %s\n', options.DAQ_flag);
+fprintf('Reverse sweep: %d (return speed %dus, %g s per trial)\n', options.reverse, return_speed, options.time_per_trial);
 
 estimated_total_time = options.time_per_trial * length(distance_vec);
 estimated_frames = estimated_total_time / 0.1;
@@ -210,15 +252,31 @@ for trial = 1:length(distance_vec)
         pause(0.01);
     end
     
-    % Lower servo
-    if distance_vec(trial) ~= 4
+    % Lower servo (reverse mode: only after the reverse sweep)
+    if ~options.reverse && distance_vec(trial) ~= 4
         sendCommand(motor, sprintf("lower %d %d", distance_vec(trial), options.lower_time));
         waitForServoDone(motor);
     end
-    
-    % Return to start position
-    sendCommand(motor, sprintf("move %d %d", options.start_angle, options.return_speed));
+
+    % Return to start position (reverse mode: ball still up, at the forward speed)
+    return_start(trial) = toc;
+    sendCommand(motor, sprintf("move %d %d", options.start_angle, return_speed));
     waitForMovementDone(motor);
+    return_end(trial) = toc;
+
+    if options.reverse
+        fprintf('  Return start: %.4fs\n', return_start(trial));
+        fprintf('  Return end: %.4fs\n', return_end(trial));
+
+        % Stay for half a second, then lower
+        while toc < return_end(trial) + 0.5
+            pause(0.01);
+        end
+        if distance_vec(trial) ~= 4
+            sendCommand(motor, sprintf("lower %d %d", distance_vec(trial), options.lower_time));
+            waitForServoDone(motor);
+        end
+    end
 
     fprintf('  Trial %d complete\n\n', trial);
 
@@ -247,6 +305,8 @@ stim_data.distance_sequence = distance_vec;
 stim_data.off_start = off_start;
 stim_data.on_start = on_start;
 stim_data.on_end = on_end;
+stim_data.return_start = return_start;
+stim_data.return_end = return_end;
 stim_data.monocular_sequence = monocular_sequence;
 
 % Close connection

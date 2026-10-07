@@ -4,6 +4,7 @@ sys.path.append(r"C:\Users\acostamendoza\projects\distance-project")
 from path_setup import setup_project_path
 setup_project_path()
 
+import copy
 import numpy as np
 from scipy import io
 import matplotlib.pyplot as plt
@@ -11,6 +12,17 @@ from src.utils import setup_plot_style, import_vars_from_matlab, create_new_resu
 from src.ActivityPipelines import ActivityLoader
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
+
+# one value per trial; select_trials subsets these together
+TRIAL_FIELDS = ('distance_sequence', 'monocular_sequence', 'eye_sequence', 'direction_sequence',
+                'block_sequence', 'sweep_from', 'sweep_to', 'off_start', 'on_start', 'on_end')
+
+
+def _subset_trials(device, trials):
+    """keep only these trials (int indices) in every per-trial field, in place"""
+    for field in TRIAL_FIELDS:
+        if hasattr(device, field):
+            setattr(device, field, np.asarray(getattr(device, field))[trials])
 
 class RadialDevice:
 
@@ -75,6 +87,7 @@ class RadialDevice:
 
         self._load_activity(tau)
         self._load_stimulus_variables()
+        self._drop_incomplete_trials()
 
         if self.response_mode == 'dFF':
             self.response = self.dFF
@@ -134,6 +147,23 @@ class RadialDevice:
             self.monocular_sequence = locals_dict['monocular_sequence']
         except:
             self.monocular_sequence = np.zeros_like(self.distance_sequence)
+
+        # radialDeviceControl_v3: sweeps alternate direction (+1 start_angle -> end_angle,
+        # -1 back) and the eye condition comes in blocks (eye_sequence 1 left, 2 right, 3 both).
+        # Older files sweep start_angle -> end_angle only.
+        self.direction_sequence = locals_dict.get('direction_sequence', np.ones(len(self.distance_sequence), dtype=int))
+        for field in ('eye_sequence', 'block_sequence', 'block_order', 'sweep_from', 'sweep_to',
+                      'block_start', 'switch_start', 'switch_end'):
+            if field in locals_dict:
+                setattr(self, field, locals_dict[field])
+
+    def _drop_incomplete_trials(self):
+        # a trial still running when imaging stopped would set on_length (the shortest trial)
+        # for every trial, so keep only trials whose on-period lies inside the imaging
+        complete = (1000 * self.on_start >= self.frames_time[0]) & (1000 * self.on_end <= self.frames_time[-1])
+        if not complete.all():
+            print(f'Dropping trial(s) {np.flatnonzero(~complete).tolist()}: on-period outside the imaging')
+            _subset_trials(self, np.flatnonzero(complete))
 
     def _load_activity(self, tau=None):
 
@@ -197,17 +227,43 @@ class RadialDevice:
 
         return on_start, on_end
 
+    def get_on_frames(self, repeat):
+        """
+        Frame indices of a trial's on-period, on_length long and ordered along angle_range
+        (start_angle -> end_angle). Reverse sweeps (v3, end_angle -> start_angle) are flipped
+        and keep the frames nearest start_angle, as forward sweeps do, so trimming to on_length
+        drops the same end of the sweep in both directions.
+        """
+        on_start, on_end = self.get_on_times(repeat)
+        frames = np.flatnonzero((self.frames_time > on_start) & (self.frames_time < on_end))
+        if self.direction_sequence[repeat] < 0:
+            frames = frames[::-1]
+        return frames[:self.on_length]
+
     def get_on_trace(self, idx, repeat):
 
-        on_start, on_end = self.get_on_times(repeat)
-        on_frames = (self.frames_time > on_start) & (self.frames_time < on_end)
+        return self.response[idx, self.get_on_frames(repeat)]
 
-        if self.on_length is not None:
-            on_frames = self.response[idx, on_frames][:self.on_length]
-        else:
-            on_frames = self.response[idx, on_frames]
+    def select_trials(self, trials, label=None):
+        """
+        Shallow copy that keeps only some trials, e.g. one eye condition of an interleaved
+        session: R.select_trials(R.eye_sequence == 1, 'left'). Activity arrays are shared, not
+        copied; on_length and angle_range stay those of the full session.
 
-        return on_frames
+        Parameters
+        ----------
+        trials : bool mask or int indices over the session's trials
+        label : str, optional
+            appended to session_name (so cached dataframes don't collide)
+        """
+        trials = np.asarray(trials)
+        if trials.dtype == bool:
+            trials = np.flatnonzero(trials)
+        sub = copy.copy(self)
+        _subset_trials(sub, trials)
+        if label is not None and hasattr(self, 'session_name'):
+            sub.session_name = f'{self.session_name}_{label}'
+        return sub
 
     def get_repeat_trace(self, cell, repeat):
 

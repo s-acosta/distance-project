@@ -1,8 +1,10 @@
 """
 Does a cell's interocular RF offset predict its distance preference? Radial device, right / left /
-both-eye sessions. Run after distance_eye_comparison.py, whose eye_table.pkl it reads:
+both-eye conditions: one interleaved session (distance-eyes, v3 stimulus, both sweep directions
+pooled) or three sessions (distance-right / -left / -both), loaded as in distance_eye_comparison.py.
+Run after distance_eye_comparison.py, whose eye_table.pkl (and direction_table.pkl) it reads:
 
-    python radial-analysis/disparity_distance.py --mouse SAM047 --date 260930 --eye-offset 1.0
+    python radial-analysis/disparity_distance.py --mouse SAM047 --date 261006 --eye-offset 1.0
 
 Cells: reliable to the left eye, the right eye and both eyes (eye_table resp_*, corr floor included).
 
@@ -28,8 +30,11 @@ Absolute geometry (disparity_range.png): each cell's preferred disparity, where 
 delta* = mean_d p(d) - dRF (no gap removed), against the disparities the ball has at each distance.
 
 By modulation (disparity_by_modulation.png): the same for distance-modulated vs not distance-modulated
-cells (both eyes, pipeline bootstrap p < 0.05), with the distance pure geometry predicts (the tested
-distance whose ball disparity is closest to the cell's preferred disparity).
+cells (both eyes), with the distance pure geometry predicts (the tested distance whose ball disparity
+is closest to the cell's preferred disparity). Distance-modulated (--modulation): 'anova' (default)
+= ANOVA distance effect p < 0.05, i.e. the distance term of the distance x direction ANOVA for an
+interleaved session (direction_table.pkl), the pipeline's one-way ANOVA otherwise; 'bootstrap' =
+the pipeline's bootstrap p < 0.05.
 
 Writes disparity_vs_distance.png, disparity_range.png, disparity_by_modulation.png and
 disparity_report.txt next to eye_table.pkl.
@@ -48,8 +53,8 @@ for p in (os.path.dirname(HERE), HERE):
     if p not in sys.path:
         sys.path.append(p)
 
-from src.data.RadialDevice import RadialDevice
-from distance_eye_comparison import DIST_CM, DIST_COLOR, EYE_COLOR, EYE_LABEL, Report
+from distance_eye_comparison import (DIST_CM, DIST_COLOR, EYE_COLOR, EYE_LABEL, Report, eye_devices,
+                                     is_interleaved, results_dir)
 
 rng = np.random.default_rng(0)
 
@@ -67,8 +72,8 @@ def distance_peaks(d, cells):
     resp = d.response[rows]
     trials = d.get_condition_trials()
     dist = np.ravel(d.distance_sequence)[trials]
-    X = np.stack([resp[:, (d.frames_time > 1000 * d.on_start[k]) & (d.frames_time < 1000 * d.on_end[k])][:, :d.on_length]
-                  for k in trials], axis=1)
+    # get_on_frames puts reverse sweeps (interleaved sessions) on the same angle axis
+    X = np.stack([resp[:, d.get_on_frames(k)] for k in trials], axis=1)
     ds = np.unique(dist)
     return ds, np.stack([X[:, dist == k].mean(axis=1).max(axis=1) for k in ds], axis=1)
 
@@ -181,7 +186,8 @@ def plot_disparity_range(delta, ball, theta_med, pref, ds, s_cm, out_dir, title,
     plt.close(fig)
 
 
-def plot_by_modulation(delta, par, ball, wdist, pref, mod, ds, s_cm, out_dir, title, log, n_perm=10000):
+def plot_by_modulation(delta, par, ball, wdist, pref, mod, ds, s_cm, out_dir, title, log, n_perm=10000,
+                       mod_label="pipeline bootstrap p < 0.05"):
     """
     Preferred disparity for distance-modulated vs not distance-modulated cells (both eyes).
     Top: preferred-disparity histograms (stacked by preferred distance) with the disparities the
@@ -193,7 +199,7 @@ def plot_by_modulation(delta, par, ball, wdist, pref, mod, ds, s_cm, out_dir, ti
     inside = (delta <= par[:, 0]) & (delta >= par[:, -1])
     groups = (("distance-modulated", mod), ("not distance-modulated", ~mod))
 
-    log("\nby distance modulation (both eyes, pipeline bootstrap p < 0.05); preferred disparity, absolute geometry")
+    log(f"\nby distance modulation (both eyes, {mod_label}); preferred disparity, absolute geometry")
     stats = {}
     for name, m in groups:
         d = delta[m]
@@ -272,10 +278,12 @@ def main():
     ap.add_argument("--eye-offset", type=float, default=1.0,
                     help="left eye, cm nasal of the right eye (rotation axis); used for the gap-corrected match")
     ap.add_argument("--n-perm", type=int, default=10000)
+    ap.add_argument("--modulation", choices=("anova", "bootstrap"), default="anova",
+                    help="which test makes a cell distance-modulated (see the module docstring)")
     args = ap.parse_args()
     plt.switch_backend("Agg")
 
-    out_dir = os.path.join(args.data_dir, f"{args.date}_{args.mouse}_distance-both", "results", "eye_comparison")
+    out_dir = results_dir(args.mouse, args.date, args.data_dir)
     log = Report(os.path.join(out_dir, "disparity_report.txt"))
     title = f"{args.date}_{args.mouse}"
     log(f"{title}: interocular RF offset vs distance preference\nargs: {vars(args)}\n")
@@ -290,12 +298,11 @@ def main():
     log(f"gap (median RF_right - RF_left): {gap:+.1f} deg; dRF_rel IQR "
         f"[{np.percentile(drf_rel, 25):+.1f}, {np.percentile(drf_rel, 75):+.1f}]")
 
-    # distance preference per session
+    # distance preference per eye condition
+    D = eye_devices(args.mouse, args.date, args.data_dir)
     pref, wdist, ds = {}, {}, None
     for eye in ("both", "left", "right"):
-        d = RadialDevice(mouse_name=args.mouse, record_date=args.date, experiment_name=f"distance-{eye}",
-                         base_data_dir=args.data_dir)
-        ds_e, peaks = distance_peaks(d, cells)
+        ds_e, peaks = distance_peaks(D[eye], cells)
         assert ds is None or np.array_equal(ds, ds_e), "sessions show different distances"
         ds = ds_e
         pref[eye] = ds[peaks.argmax(axis=1)]
@@ -317,12 +324,20 @@ def main():
     r, p, ci, n = res["both, RF partialled out"]
     log(f"  both, controlling for RF position: rho={r:+.3f}  95% CI [{ci[0]:+.3f}, {ci[1]:+.3f}]  shuffle p={p:.4f}")
 
-    S = pd.read_pickle(os.path.join(args.data_dir, f"{args.date}_{args.mouse}_distance-both",
-                                    f"{args.date}_{args.mouse}_distance-both_dataframe.pkl")).set_index("cell_id")
+    # both-eye pipeline stats (cached by distance_eye_comparison.py)
+    d = D["both"]
+    S = pd.read_pickle(os.path.join(d.data_dir, f"{d.session_name}_dataframe.pkl")).set_index("cell_id")
     b = pd.DataFrame(S.loc[cells, "binocular"].tolist(), index=cells)
-    mod = (b["bootstrap_pvalue"] < 0.05).to_numpy()
+    if args.modulation == "bootstrap":
+        mod, mod_label = (b["bootstrap_pvalue"] < 0.05).to_numpy(), "pipeline bootstrap p < 0.05"
+    elif is_interleaved(args.mouse, args.date, args.data_dir):
+        dt = pd.read_pickle(os.path.join(out_dir, "direction_table.pkl"))
+        mod, mod_label = (dt.loc[cells, "p2_both_distance"] < 0.05).to_numpy(), "distance x direction ANOVA, distance p < 0.05"
+    else:
+        mod, mod_label = (b["anova_pvalue"] < 0.05).to_numpy(), "pipeline one-way ANOVA p < 0.05"
+    log(f"  distance-modulated ({mod_label}): {mod.sum()} of {len(mod)}")
     r, p, ci, n = spearman_test(drf_rel[mod], wdist["both"][mod], n_perm=args.n_perm)
-    log(f"  both, distance-modulated cells only (bootstrap p<0.05): rho={r:+.3f}  "
+    log(f"  both, distance-modulated cells only: rho={r:+.3f}  "
         f"95% CI [{ci[0]:+.3f}, {ci[1]:+.3f}]  shuffle p={p:.4f}  n={n}")
     r, p, ci, n = spearman_test(drf_rel, b["distance"].to_numpy(float), n_perm=args.n_perm)
     log(f"  both, pipeline preferred distance instead: rho={r:+.3f}  95% CI [{ci[0]:+.3f}, {ci[1]:+.3f}]  "
@@ -433,7 +448,7 @@ def main():
     delta, par, ball, theta_med = preferred_disparity(drf, sub["RF_right"].to_numpy(float), ds, args.eye_offset)
     plot_disparity_range(delta, ball, theta_med, pref["both"], ds, args.eye_offset, out_dir, title, log)
     plot_by_modulation(delta, par, ball, wdist["both"], pref["both"], mod, ds, args.eye_offset, out_dir, title, log,
-                       n_perm=args.n_perm)
+                       n_perm=args.n_perm, mod_label=mod_label)
     log(f"\nSaved: disparity_vs_distance.png, disparity_range.png, disparity_by_modulation.png in {out_dir}")
 
 

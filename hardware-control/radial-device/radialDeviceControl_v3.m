@@ -3,7 +3,8 @@ function stim_data = radialDeviceControl_v3(motor_port, options)
 %
 % Usage:
 %   plan      = radialDeviceControl_v3([], 'n_repeats', 6, 'preview', true)   % plan and timing only
-%   stim_data = radialDeviceControl_v3('COM3', 'n_repeats', 6, 'DAQ_flag', true)
+%   stim_data = radialDeviceControl_v3('COM3', 'trigger_port', 'COM5', 'n_repeats', 6)   % starts on the scope
+%   stim_data = radialDeviceControl_v3('COM3', 'trigger', "daq", 'n_repeats', 6)         % old rig, NI DAQ
 %
 % Design:
 %   Eye conditions run in blocks, in the order of block_order. The default, L R B B R L, puts each
@@ -32,7 +33,12 @@ function stim_data = radialDeviceControl_v3(motor_port, options)
 %   time_per_trial - Seconds per trial; [] = the shortest that fits one sweep, rounded up to 0.5 s.
 %   frame_rate     - Imaging rate (Hz), only for the frame estimate. Default: 10
 %   random_flag    - Shuffle the sweep order within blocks. Default: true
-%   DAQ_flag       - Enable DAQ triggering. Default: false
+%   trigger        - How the session starts. Default: "arduino"
+%                    "arduino": on the scope's first frame. The start-trigger Arduino (startTrigger.ino)
+%                               on trigger_port reads the frame clock; start the acquisition on the scope.
+%                    "daq":     on enter; the NI DAQ (Dev1/ao0) goes to 5 V to start the scope (old rig).
+%                    "enter":   on enter, with no trigger (dry runs).
+%   trigger_port   - COM port of the start-trigger Arduino, needed for "arduino". Default: ""
 %   preview        - Print the plan and timing and return without touching the hardware. Default: false
 %
 % Eye condition codes (eye_sequence and block_order in stim_data): 1 = left eye only (blocker on the
@@ -40,7 +46,8 @@ function stim_data = radialDeviceControl_v3(motor_port, options)
 %
 % Saved per trial: distance_sequence, eye_sequence, direction_sequence (+1 start -> end,
 % -1 end -> start), sweep_from / sweep_to (deg), block_sequence, off_start, on_start (sweep start),
-% on_end (sweep end). Per block: block_start. Per switch: switch_start, switch_end.
+% on_end (sweep end). Per block: block_start. Per switch: switch_start, switch_end. Times are seconds
+% from the session start (the scope's first frame with trigger "arduino").
 % monocular_sequence (true when one eye is covered) is kept so the existing loaders read the file.
 % Every field is numeric or logical, so scipy.io.loadmat reads it.
 
@@ -60,7 +67,8 @@ arguments
     options.time_per_trial = [];
     options.frame_rate = 10;  % Hz
     options.random_flag = true;
-    options.DAQ_flag = false;
+    options.trigger (1,1) string {mustBeMember(options.trigger, ["arduino", "daq", "enter"])} = "arduino";
+    options.trigger_port = "";
     options.preview = false;
 end
 
@@ -152,8 +160,8 @@ fprintf('  Trial: %.1f s (off %.2f + sweep %.2f + hold 0.50 + lower %.2f = %.2f 
 fprintf('  Blocker switches: %d x %g s\n', n_switches, options.switch_time);
 fprintf('  Session: %.0f s (%.1f min), ~%.0f frames at %g Hz\n', ...
         total_s, total_s / 60, total_s * options.frame_rate, options.frame_rate);
-fprintf('  Schedule (approx, mm:ss from pressing enter):\n');
-fprintf('     0:00  before enter: %s\n', EYE_PROMPT(block_eye(1)));
+fprintf('  Schedule (approx, mm:ss from the session start):\n');
+fprintf('     0:00  before the start: %s\n', EYE_PROMPT(block_eye(1)));
 for b = 1:n_blocks
     t0 = (b - 1) * sweeps_per_block * options.time_per_trial + nnz(switch_before(1:b)) * options.switch_time;
     if switch_before(b)
@@ -167,6 +175,8 @@ fprintf('    %s  end\n', mmss(total_s));
 
 % Plan saved in every mode; the run adds the timestamps
 stim_data = rmfield(options, 'preview');
+stim_data.trigger = char(options.trigger);  % char: scipy can't read string objects
+stim_data.trigger_port = char(options.trigger_port);
 stim_data.block_order = block_eye(:)';
 stim_data.distance_sequence = distance_vec;
 stim_data.eye_sequence = eye_vec;
@@ -188,8 +198,12 @@ if options.preview
 end
 fprintf('========================================\n');
 
+if options.trigger == "arduino" && strlength(options.trigger_port) == 0
+    error('trigger "arduino" needs trigger_port, the start-trigger Arduino''s COM port (e.g. ''COM5'').');
+end
+
 %% Initialize DAQ
-if options.DAQ_flag
+if options.trigger == "daq"
     DAQ = daq('ni');
     DAQ.addoutput('Dev1', 'ao0', 'Voltage');
     DAQ.write(0);
@@ -219,6 +233,17 @@ end
 pause(0.2);
 flush(motor);
 
+% Connect to the start-trigger Arduino (opening the port resets it)
+if options.trigger == "arduino"
+    fprintf('Connecting to the start-trigger Arduino on %s...\n', options.trigger_port);
+    frame_trigger = serialport(options.trigger_port, 115200);
+    configureTerminator(frame_trigger, "LF");
+    if ~waitForLine(frame_trigger, "Trigger ready", 10)
+        error('No "Trigger ready" from %s: is startTrigger.ino loaded?', options.trigger_port);
+    end
+    fprintf('Connected!\n\n');
+end
+
 % Initial positioning: the first sweep is forward
 fprintf('Moving to starting position %d deg...\n', sweep_from(1));
 sendCommand(motor, sprintf("move %d %d", sweep_from(1), options.return_speed));
@@ -227,8 +252,6 @@ current_angle = sweep_from(1);
 fprintf('Ready at %d deg\n\n', current_angle);
 
 fprintf('Set the blocker for block 1: %s\n', EYE_PROMPT(eye_vec(1)));
-fprintf('Press enter when ready (timing and the DAQ trigger start then)\n');
-pause();
 
 % Data collection
 off_start = zeros(1, n_trials);
@@ -239,11 +262,30 @@ switch_start = zeros(1, n_switches);
 switch_end = zeros(1, n_switches);
 s = 0;
 
-% Start timing and trigger DAQ
-tic;
-if options.DAQ_flag
-    DAQ.write(5);
-    fprintf('DAQ trigger sent (5V)\n\n');
+% Start timing: on the scope's first frame ("arduino"), or on enter ("daq" also starts the scope)
+switch options.trigger
+    case "arduino"
+        fprintf('Stop focus / live view on the scope, then press enter to arm the trigger\n');
+        pause();
+        flush(frame_trigger);
+        writeline(frame_trigger, "a");
+        if ~waitForLine(frame_trigger, "Armed", 5)
+            error('No "Armed" reply from the start-trigger Arduino on %s', options.trigger_port);
+        end
+        fprintf('Armed: start the acquisition on the scope. The session starts on the first frame.\n');
+        waitForLine(frame_trigger, "Start", inf);  % Ctrl-C aborts
+        tic;
+        fprintf('First frame received: session started\n\n');
+    case "daq"
+        fprintf('Press enter when ready (timing and the DAQ trigger start then)\n');
+        pause();
+        tic;
+        DAQ.write(5);
+        fprintf('DAQ trigger sent (5V)\n\n');
+    case "enter"
+        fprintf('Press enter when ready (timing starts then; no trigger)\n');
+        pause();
+        tic;
 end
 
 % Main experiment loop
@@ -331,7 +373,7 @@ for trial = 1:n_trials
 end
 
 % Turn off DAQ trigger
-if options.DAQ_flag
+if options.trigger == "daq"
     DAQ.write(0);
     fprintf('DAQ trigger ended (0V)\n');
 end
@@ -351,10 +393,25 @@ stim_data.block_start = block_start;
 stim_data.switch_start = switch_start;
 stim_data.switch_end = switch_end;
 
-% Close connection
-clear motor;
+% Close connections
+clear motor frame_trigger;
 
 %% Helper Functions
+
+    function found = waitForLine(port, pattern, timeout)
+        % Wait for a line containing pattern; false on timeout (inf waits until Ctrl-C)
+        start_time = tic;
+        while toc(start_time) < timeout
+            if port.NumBytesAvailable > 0
+                if contains(readline(port), pattern)
+                    found = true;
+                    return;
+                end
+            end
+            pause(0.001);
+        end
+        found = false;
+    end
 
     function sendCommand(port, cmd)
         % Send command and wait for acknowledgment

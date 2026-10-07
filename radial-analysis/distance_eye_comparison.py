@@ -1,15 +1,23 @@
 """
-Right / left / both-eye comparison on the distance device.
+Right / left / both-eye comparison on the distance device. Left hemisphere imaged: right eye = contra.
 
-The same stimulus is shown with the right eye only, the left eye only and both eyes, as three
-sessions ``<date>_<mouse>_distance-right / -left / -both``. All three come from one concatenated
-suite2p run, so ROI i is the same cell in every session. Left hemisphere imaged: right eye = contra.
-The stimulus code doesn't know which eye is covered, so every session is flagged binocular.
+Two recording layouts, picked automatically:
+
+* interleaved (from 261006 on): one session ``<date>_<mouse>_distance-eyes`` recorded with
+  radialDeviceControl_v3. The eye condition comes in blocks (eye_sequence 1 left, 2 right,
+  3 both) and sweeps alternate direction. The session is split into one trial subset per eye
+  (RadialDevice.select_trials). Both directions are pooled: reverse sweeps are flipped onto the
+  start -> end angle axis (RadialDevice.get_on_trace), which assumes no response lag
+  (checked in direction_check.png).
+* separate sessions (260928, 260930): ``<date>_<mouse>_distance-right / -left / -both`` from one
+  concatenated suite2p run, so ROI i is the same cell in every session. The stimulus code
+  didn't know which eye was covered, so every session is flagged binocular.
 
 Works for single-distance sessions (e.g. 260928, distance 1 only) and for sessions with every
-distance (e.g. 260930, distances 0-3 + control). The three sessions must show the same distances.
+distance (e.g. 260930, distances 0-3 + control). The three eye conditions must show the same distances.
 
-Everything is written to ``<processed-data>/<date>_<mouse>_distance-both/results/eye_comparison/``:
+Everything is written to ``<processed-data>/<date>_<mouse>_distance-eyes/results/eye_comparison/``
+(``distance-both`` for separate sessions):
     report.txt           everything printed: trial structure, angle axis, scale checks, summary
     eye_table.pkl/.csv   one row per cell: reliable / reliable_corr / RF per eye, resp_*, category
     onset_aligned.png    population mean around stimulus onset (to place the baseline window)
@@ -19,32 +27,49 @@ Everything is written to ``<processed-data>/<date>_<mouse>_distance-both/results
     rf_shift_hist.png    histogram of RF right - left for the cells reliable to left and right
     rf_shift_hist_by_distance.png   the same at each distance, one row per distance (several distances only)
     location_map.png     cells on the suite2p field of view, colored by eye (right / left sessions)
+    direction_check.png  interleaved only: RF forward - reverse sweep, per eye (pooling check)
     cells/<category>/    one figure per cell. Single distance: left / right / both heatmaps +
                          overlaid means. Several distances: the nasal-vs-temporal figure
                          (CrossSessionVisualizer) with one row per eye: left / right / both.
+  interleaved with several distances, distance modulation per sweep direction:
+    direction_table.pkl/.csv     per cell, eye and direction (pooled / fwd / rev): reliable, RF,
+                                 ANOVA p, modulated; distance x direction ANOVA; preferred distance
+    direction_modulation.png     % modulated per direction and 2-way terms per eye; preferred
+                                 distance forward vs reverse
+    cells_directions/<group>/    both-eye cells behind each bar of direction_modulation.png (forward,
+                                 reverse, both_directions, pooled, 2way_distance, 2way_dist_x_dir,
+                                 2way_direction), rows pooled / forward / reverse; a cell in several
+                                 groups is copied into each
 
-Each session is first processed on its own with the standard pipeline (``analyze_session``),
-cached to the usual ``<session>_dataframe.pkl`` in each session folder (shared with the notebooks).
-Only afterwards are the three sessions put on a common angle axis and pooled normalization for
-the figures.
+Each eye condition is first processed on its own with the standard pipeline, cached to
+``<session>_dataframe.pkl`` in each session folder (interleaved: ``<session>_<eye>_dataframe.pkl``
+and per direction ``<session>_<eye>_<fwd|rev>_dataframe.pkl`` in the one session folder), shared
+with the notebooks. Only afterwards are the three put on a common angle axis and pooled
+normalization for the figures.
 
 Run with the distance-project env. This file sits in radial-analysis/ so that ``src`` resolves to
 radial-analysis (disparity-analysis defines its own ``src.analysis.CellAnalysis``):
 
+    python radial-analysis/distance_eye_comparison.py --mouse SAM047 --date 261006
     python radial-analysis/distance_eye_comparison.py --mouse SAM047 --date 260930
 
 ``plot_cell`` can also be imported into a notebook to look at single cells; the script only
 switches to the Agg backend when run directly.
 """
+import io
 import os
 import sys
+import pickle
 import shutil
 import argparse
+import contextlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
+from scipy.stats import f as f_dist
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 for p in (os.path.dirname(HERE), HERE):
@@ -52,10 +77,17 @@ for p in (os.path.dirname(HERE), HERE):
         sys.path.append(p)
 
 from src.workflows import analyze_session
+from src.data.RadialDevice import RadialDevice
+from src.analysis.CellAnalysis import SessionAnalyzer
 from src.viz.CellVisualizer import CellVisualizer
 from src.viz.CrossSessionVisualizer import CrossSessionVisualizer
 
 EYES = ("right", "left", "both")
+INTERLEAVED = "distance-eyes"                                  # radialDeviceControl_v3 session
+EYE_CODE = {"left": 1, "right": 2, "both": 3}                  # eye_sequence / block_order
+DIRECTIONS = {"fwd": 1, "rev": -1}                             # direction_sequence: start -> end angle / back
+DIR_LABEL = {"fwd": "forward", "rev": "reverse"}
+MOD_CATEGORIES = ("both-dirs", "fwd-only", "rev-only", "pooled-only")   # direction_table: mod_category_both
 
 # figures: panel / row order and colors (left red, right blue, both purple)
 PANEL_ORDER = ("left", "right", "both")
@@ -104,6 +136,95 @@ def process_sessions(mouse, date, data_dir, n_iterations, recompute, log):
     return D, stats
 
 
+def is_interleaved(mouse, date, data_dir):
+    """one interleaved session (v3 stimulus) rather than three sessions, one per eye"""
+    return os.path.isdir(os.path.join(data_dir, f"{date}_{mouse}_{INTERLEAVED}"))
+
+
+def results_dir(mouse, date, data_dir):
+    experiment = INTERLEAVED if is_interleaved(mouse, date, data_dir) else "distance-both"
+    return os.path.join(data_dir, f"{date}_{mouse}_{experiment}", "results", "eye_comparison")
+
+
+def eye_devices(mouse, date, data_dir):
+    """
+    The three eye conditions as RadialDevices, without stats: the eye views of the interleaved
+    session, or the three sessions. Other scripts (disparity_distance.py) load data through this.
+    """
+    if is_interleaved(mouse, date, data_dir):
+        device = RadialDevice(mouse_name=mouse, record_date=date, experiment_name=INTERLEAVED,
+                              base_data_dir=data_dir)
+        return {eye: interleaved_view(device, eye) for eye in EYES}
+    return {eye: RadialDevice(mouse_name=mouse, record_date=date, experiment_name=f"distance-{eye}",
+                              base_data_dir=data_dir) for eye in EYES}
+
+
+def interleaved_view(device, eye, direction=None):
+    """trials of one eye condition (and sweep direction, 'fwd' / 'rev') of an interleaved session"""
+    keep = device.eye_sequence == EYE_CODE[eye]
+    if direction is None:
+        return device.select_trials(keep, label=eye)
+    return device.select_trials(keep & (device.direction_sequence == DIRECTIONS[direction]),
+                                label=f"{eye}_{direction}")
+
+
+def _save_stats(view, n_iterations, path):
+    df = SessionAnalyzer(view).analyze_session_stats(n_iterations=n_iterations)
+    with open(path, "wb") as f:
+        pickle.dump(df, f)
+
+
+def _analyze_condition(task):
+    """worker process: loads its own RadialDevice, runs one condition, pickles it to path"""
+    mouse, date, data_dir, eye, direction, n_iterations, path = task
+    with contextlib.redirect_stdout(io.StringIO()):          # per-cell progress lines would interleave
+        device = RadialDevice(mouse_name=mouse, record_date=date, experiment_name=INTERLEAVED,
+                              base_data_dir=data_dir)
+        _save_stats(interleaved_view(device, eye, direction), n_iterations, path)
+    return path
+
+
+def process_interleaved(mouse, date, data_dir, n_iterations, recompute, jobs, log):
+    """
+    Interleaved session: one trial subset per eye (both directions pooled) and per eye and sweep
+    direction, each run through the standard single-session analysis (SessionAnalyzer, as
+    analyze_session does) and cached to <session>_<eye>[_fwd|_rev]_dataframe.pkl in the session
+    folder. Missing caches are computed `jobs` at a time in separate processes.
+    Returns the pooled views / stats per eye and the per-direction ones keyed (eye, 'fwd'|'rev').
+    """
+    device = RadialDevice(mouse_name=mouse, record_date=date, experiment_name=INTERLEAVED,
+                          base_data_dir=data_dir)
+    assert hasattr(device, "eye_sequence"), f"{device.session_name}: no eye_sequence (not a v3 stimulus file)"
+    conditions = [(eye, None) for eye in EYES] + [(eye, s) for eye in EYES for s in DIRECTIONS]
+    views = {c: interleaved_view(device, *c) for c in conditions}
+    paths = {c: os.path.join(device.data_dir, f"{v.session_name}_dataframe.pkl") for c, v in views.items()}
+
+    todo = [c for c in conditions if recompute or not os.path.exists(paths[c])]
+    if jobs > 1 and len(todo) > 1:
+        print(f"[...] Computing analysis for {len(todo)} conditions, {min(jobs, len(todo))} at a time")
+        with ProcessPoolExecutor(max_workers=min(jobs, len(todo))) as ex:
+            futures = {ex.submit(_analyze_condition, (mouse, date, data_dir, *c, n_iterations, paths[c])): c
+                       for c in todo}
+            for k, fut in enumerate(as_completed(futures), 1):
+                fut.result()
+                print(f"[ok] {views[futures[fut]].session_name} ({k}/{len(todo)})")
+    else:
+        for c in todo:
+            print(f"[...] Computing analysis for {views[c].session_name}")
+            _save_stats(views[c], n_iterations, paths[c])
+            print()
+
+    stats = {}
+    for c in conditions:
+        with open(paths[c], "rb") as f:
+            stats[c] = pickle.load(f)
+        log(f"{views[c].session_name}: stats in {paths[c]}")
+        assert np.array_equal(stats[c]["cell_id"].values, device.suite2p_id), f"{c}: cached cells differ"
+    D = {eye: views[(eye, None)] for eye in EYES}
+    Dd = {c: views[c] for c in conditions if c[1] is not None}
+    return D, {eye: stats[(eye, None)] for eye in EYES}, Dd, {c: stats[c] for c in Dd}
+
+
 def shown_distances(D):
     """stimulus distances (control excluded), which must be the same in the three sessions"""
     shown = {eye: tuple(np.unique(d.distance_sequence[d.get_condition_trials()]).tolist())
@@ -114,6 +235,12 @@ def shown_distances(D):
 
 def describe_sessions(D, log):
     log(f"cells: {len(D['right'].suite2p_id)}")
+    d = D["both"]
+    if hasattr(d, "block_order"):
+        code_eye = {v: k for k, v in EYE_CODE.items()}
+        log(f"blocks: {' '.join(code_eye[int(b)] for b in d.block_order)}  "
+            f"(start, min: {', '.join(f'{t / 60:.1f}' for t in d.block_start)}; "
+            f"{len(d.switch_start)} blocker switches of {np.mean(d.switch_end - d.switch_start):.0f} s)")
     for eye, d in D.items():
         dist, n = np.unique(d.distance_sequence, return_counts=True)
         k = d.get_condition_trials()                  # stimulus trials (control excluded)
@@ -122,6 +249,10 @@ def describe_sessions(D, log):
             f"angles={np.ravel(d.start_angle)[0]:.1f} -> {np.ravel(d.end_angle)[0]:.1f}")
         log(f"  trials per distance={dict(zip(dist.tolist(), n.tolist()))}  "
             f"monocular_sequence={np.unique(d.monocular_sequence).tolist()}")
+        if np.any(d.direction_sequence < 0):
+            per_dir = {int(dk): [int(np.sum((d.distance_sequence == dk) & (d.direction_sequence == s)))
+                                 for s in (1, -1)] for dk in dist}
+            log(f"  trials per distance [forward, reverse]={per_dir}")
         log(f"  on duration={np.mean(d.on_end[k] - d.on_start[k]):.2f}s  "
             f"off_start-on_start={np.mean(d.off_start[k] - d.on_start[k]):.2f}s  "
             f"raise={np.ravel(d.raise_time)[0]}  lower={np.ravel(d.lower_time)[0]}  "
@@ -162,22 +293,20 @@ def pooled_normalize(D, log):
 # ---------------------------------------------------------------- Step 1: trial tensors
 
 def trial_tensor(d):
-    """cells x trials x angle for the stimulus trials (control excluded); same slicing as get_on_trace"""
-    X = []
-    for k in d.get_condition_trials():
-        on_start, on_end = d.get_on_times(k)
-        mask = (d.frames_time > on_start) & (d.frames_time < on_end)
-        X.append(d.response[:, mask][:, :d.on_length])
-    return np.stack(X, axis=1)
+    """
+    cells x trials x angle for the stimulus trials (control excluded); same frames as
+    get_on_trace, so reverse sweeps are flipped onto the angle axis
+    """
+    return np.stack([d.response[:, d.get_on_frames(k)] for k in d.get_condition_trials()], axis=1)
 
 
 # ---------------------------------------------------------------- Step 2: reliability
 
-def condition_stats(df):
+def condition_stats(df, fields=("reliable", "reliable_corr", "RF")):
     # each session holds a single eye condition, so exactly one of the two dicts is filled
     filled = [c for c in ("monocular", "binocular") if df[c].notna().all()]
     assert len(filled) == 1, f"expected one condition per session, got {filled}"
-    return pd.DataFrame(df[filled[0]].tolist(), index=df["cell_id"].values)[["reliable", "reliable_corr", "RF"]]
+    return pd.DataFrame(df[filled[0]].tolist(), index=df["cell_id"].values)[list(fields)]
 
 
 def floor_stats(df, corr_floor):
@@ -483,6 +612,257 @@ def plot_rf_shift_hist_by_distance(D, X, eye_df, angles, out_dir, log, title, to
     plt.close(fig)
 
 
+def plot_direction_check(D, X, eye_df, angles, out_dir, log, title, frames_per_bin=3):
+    """
+    Interleaved sessions pool both sweep directions (reverse sweeps flipped onto the angle axis),
+    which assumes no response lag: a lag t puts the forward-sweep RF speed x t past the true RF
+    and the reverse-sweep RF speed x t before it, so RF forward - reverse = 2 x speed x t.
+    Per eye, for the cells reliable to it: RF of the forward-only and reverse-only trial averages.
+    Same bins as rf_shift_hist.png.
+    """
+    assert frames_per_bin % 2 == 1, "frames_per_bin must be odd"
+    d = D["both"]
+    k = d.get_condition_trials()
+    speed = abs(np.ravel(d.end_angle)[0] - np.ravel(d.start_angle)[0]) / np.median(d.on_end[k] - d.on_start[k])
+    w = frames_per_bin * (angles[1] - angles[0])
+
+    diffs = {}
+    for eye in PANEL_ORDER:
+        direction = D[eye].direction_sequence[D[eye].get_condition_trials()]   # same trial order as X
+        Xr = X[eye][np.flatnonzero(eye_df[f"resp_{eye}"].to_numpy())]
+        rf = {s: angles[Xr[:, direction == s].mean(axis=1).argmax(axis=1)] for s in (1, -1)}
+        diffs[eye] = rf[1] - rf[-1]
+    big = max((np.abs(v).max() for v in diffs.values() if len(v)), default=w)
+    kb = int(np.ceil(big / w))
+    edges = (np.arange(-kb, kb + 2) - 0.5) * w                          # bin centers at -kb*w .. kb*w
+
+    log(f"\nRF forward - reverse sweep, cells reliable to that eye (sweep {speed:.1f} deg/s; "
+        f"lag = shift / (2 x speed)):")
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharex=True)
+    for ax, eye in zip(axes, PANEL_ORDER):
+        v = diffs[eye]
+        ax.set_title(f"{EYE_LABEL[eye]} (n={len(v)})", fontsize=12)
+        if not len(v):
+            continue
+        q1, med, q3 = np.percentile(v, [25, 50, 75])
+        lag = med / (2 * speed) * 1000
+        log(f"  {eye:<5} n={len(v):4d}  median={med:+5.1f}  IQR=[{q1:+.1f}, {q3:+.1f}]  "
+            f"within ±{w / 2:.1f}: {np.mean(np.abs(v) < w / 2):4.0%}  implied lag {lag:+.0f} ms")
+        ax.hist(v, bins=edges, color=EYE_COLOR[eye], alpha=0.8, edgecolor="white")
+        ax.axvline(0, color="0.4", linestyle="--", linewidth=1)
+        ax.axvline(med, color="black", linewidth=1)
+        ax.text(0.98, 0.95, f"median {med:+.1f}°\nlag {lag:+.0f} ms", transform=ax.transAxes,
+                ha="right", va="top", fontsize=10)
+        ax.set_xlabel("RF forward − RF reverse (deg)", fontsize=11)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+    axes[0].set_ylabel("Cells", fontsize=11)
+    fig.suptitle(f"{title}\nRF shift between sweep directions (0 = no lag, directions can be pooled)", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "direction_check.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def block_drift(D, X, eye_df, log, window=5):
+    """
+    Response per block in recording order, to see slow drift over the session (the mirrored
+    order, e.g. L R B B R L, balances a linear drift across eyes). Per cell: mean over the
+    block's stimulus trials in a ±window frame window at the cell's RF for that eye; then the
+    median over the cells reliable to that eye.
+    """
+    d = D["both"]
+    code_eye = {v: k for k, v in EYE_CODE.items()}
+    log("\nresponse at the RF per block, recording order (pooled z, median over cells reliable to that eye):")
+    per_eye = {}
+    for b, code in enumerate(d.block_order, 1):
+        eye = code_eye[int(code)]
+        block = D[eye].block_sequence[D[eye].get_condition_trials()]           # same trial order as X
+        Xr = X[eye][np.flatnonzero(eye_df[f"resp_{eye}"].to_numpy())]
+        if not len(Xr):
+            continue
+        rf_i = Xr.mean(axis=1).argmax(axis=1)
+        a = np.arange(Xr.shape[2])
+        mask = (a[None] >= rf_i[:, None] - window) & (a[None] <= rf_i[:, None] + window)
+        val = (Xr[:, block == b] * mask[:, None, :]).sum(axis=2) / mask.sum(axis=1)[:, None]
+        m = np.median(val.mean(axis=1))
+        per_eye.setdefault(eye, []).append(m)
+        log(f"  block {b}  {eye:<5} trials={np.sum(block == b):3d}  median={m:.3f}")
+    log("  later / earlier block of each eye: " + ", ".join(
+        f"{eye} {v[1] / v[0]:.2f}" for eye, v in per_eye.items() if len(v) == 2 and v[0] > 0))
+
+
+# ---------------------------------------------------------------- distance modulation per direction
+
+def two_way_anova(d, X_eye, window=5):
+    """
+    Per cell, distance x sweep direction ANOVA on the per-trial response in a ±window frame
+    window at the RF of the trial average over both directions (the pipeline's ANOVA window).
+    Type II sums of squares, so an unbalanced design (a dropped trial) is fine.
+    Returns p-values {distance, direction, interaction} (one per cell), the mean response per
+    direction and distance (cells x [fwd, rev] x distances) and the distances.
+    """
+    trials = d.get_condition_trials()                                   # same trial order as X_eye
+    dist, sweep = d.distance_sequence[trials], d.direction_sequence[trials]
+    rf_i = X_eye.mean(axis=1).argmax(axis=1)
+    a = np.arange(X_eye.shape[2])
+    mask = (a[None] >= rf_i[:, None] - window) & (a[None] <= rf_i[:, None] + window)
+    Y = ((X_eye * mask[:, None, :]).sum(axis=2) / mask.sum(axis=1)[:, None]).T     # trials x cells
+
+    ds = np.unique(dist)
+    one = np.ones((len(trials), 1))
+    Dm = (dist[:, None] == ds[None, 1:]).astype(float)                            # distance dummies
+    Sm = (sweep < 0).astype(float)[:, None]                                         # direction dummy
+
+    def rss(*blocks):
+        M = np.hstack(blocks)
+        beta = np.linalg.lstsq(M, Y, rcond=None)[0]
+        return ((Y - M @ beta) ** 2).sum(axis=0), M.shape[1]
+
+    rss_full, n_par = rss(one, Dm, Sm, Dm * Sm)
+    rss_add = rss(one, Dm, Sm)[0]
+    df_res, nd = len(trials) - n_par, len(ds) - 1
+    with np.errstate(divide="ignore", invalid="ignore"):                # silent cells: 0 / 0
+        ms = rss_full / df_res
+        p = {"distance": f_dist.sf((rss(one, Sm)[0] - rss_add) / nd / ms, nd, df_res),
+             "direction": f_dist.sf((rss(one, Dm)[0] - rss_add) / ms, 1, df_res),
+             "interaction": f_dist.sf((rss_add - rss_full) / nd / ms, nd, df_res)}
+    tuning = np.stack([np.stack([Y[(sweep == s) & (dist == k)].mean(axis=0) for k in ds], axis=1)
+                       for s in DIRECTIONS.values()], axis=1)
+    return p, tuning, ds
+
+
+def build_direction_table(D, X, stats, stats_d, corr_floor=None):
+    """
+    One row per cell. Per eye and condition (pooled = both directions, fwd, rev): the pipeline's
+    reliable / reliable_corr / RF / one-way ANOVA p, resp_* = reliable with the corr floor and
+    mod_* = resp_* & ANOVA p < 0.05 (the pipeline's modulated call). Per eye: the distance x
+    direction ANOVA (p2_*), the preferred distance per direction (pref_*, from the mean response
+    in the pooled RF window) and resp_<eye>_any = reliable pooled or in either direction.
+    mod_category_both: both eyes modulated in both directions / forward only / reverse only /
+    pooled only (neither direction alone).
+    """
+    fields = ("reliable", "reliable_corr", "RF", "anova_pvalue")
+    parts = {f"{eye}_pooled": condition_stats(stats[eye], fields) for eye in EYES}
+    parts.update({f"{eye}_{s}": condition_stats(df, fields) for (eye, s), df in stats_d.items()})
+    t = pd.concat(parts, axis=1)
+    t.columns = [f"{metric}_{cond}" for cond, metric in t.columns]
+    t.index.name = "cell_id"
+    for cond in parts:
+        resp = t[f"reliable_{cond}"].astype(bool)
+        if corr_floor is not None:
+            resp &= t[f"reliable_corr_{cond}"] >= corr_floor
+        t[f"resp_{cond}"] = resp
+        t[f"mod_{cond}"] = resp & (t[f"anova_pvalue_{cond}"] < 0.05)
+
+    tuning = {}
+    for eye in EYES:
+        p, tuning[eye], ds = two_way_anova(D[eye], X[eye])               # X rows follow suite2p order
+        for term, v in p.items():
+            t[f"p2_{eye}_{term}"] = v
+        for i, s in enumerate(DIRECTIONS):
+            t[f"pref_{eye}_{s}"] = ds[tuning[eye][:, i].argmax(axis=1)]
+        t[f"resp_{eye}_any"] = t[[f"resp_{eye}_{c}" for c in ("pooled", *DIRECTIONS)]].any(axis=1)
+
+    f, r = t["mod_both_fwd"], t["mod_both_rev"]
+    t["mod_category_both"] = np.select([f & r, f & ~r, ~f & r, t["mod_both_pooled"]], list(MOD_CATEGORIES),
+                                       default="none")
+    return t, tuning
+
+
+def direction_summary(t, eye):
+    """counts behind the report and figure; cells = reliable to that eye pooled or in either direction"""
+    cells = t[f"resp_{eye}_any"]
+    n = int(cells.sum())
+    m = {c: t[f"mod_{eye}_{c}"] & cells for c in ("fwd", "rev", "pooled")}
+    p2 = {term: (t[f"p2_{eye}_{term}"] < 0.05) & cells for term in ("distance", "direction", "interaction")}
+    both = m["fwd"] & m["rev"]
+    a, b = (t.loc[both, f"pref_{eye}_{s}"].to_numpy(dtype=int) for s in DIRECTIONS)
+    chance = np.sum(np.bincount(a, minlength=4) * np.bincount(b, minlength=4)) / len(a) ** 2 if len(a) else np.nan
+    return dict(cells=cells, n=n, m=m, p2=p2, both=both, pref=(a, b), chance=chance,
+                agree=np.mean(a == b) if len(a) else np.nan,
+                expected=m["fwd"].sum() * m["rev"].sum() / n if n else np.nan)
+
+
+def report_direction_modulation(t, tuning, log):
+    log("\n" + "=" * 50)
+    log(" Distance modulation by sweep direction")
+    log(" forward = -30 -> 60 deg, reverse = 60 -> -30 deg. modulated = reliable in that condition")
+    log(" (split-half test + corr floor) & one-way ANOVA p < 0.05. 2-way = distance x direction")
+    log(" ANOVA at the pooled RF (type II). Chance: 5% per test.")
+    log("=" * 50)
+    for eye in PANEL_ORDER:
+        s = direction_summary(t, eye)
+        n, m, p2 = s["n"], s["m"], s["p2"]
+        rf_, rr = t[f"resp_{eye}_fwd"], t[f"resp_{eye}_rev"]
+        pc = lambda k: f"{k} ({100 * k / max(n, 1):.0f}%)"
+        log(f"\n{EYE_LABEL[eye]}: {n} cells reliable pooled or in either direction")
+        log(f"  reliable: pooled {t[f'resp_{eye}_pooled'].sum()}, forward {rf_.sum()}, reverse {rr.sum()}; "
+            f"both directions {(rf_ & rr).sum()}, forward only {(rf_ & ~rr).sum()}, reverse only {(~rf_ & rr).sum()}")
+        log(f"  modulated: forward {pc(m['fwd'].sum())}, reverse {pc(m['rev'].sum())}, pooled {pc(m['pooled'].sum())}")
+        log(f"    both directions {s['both'].sum()} (expected if independent: {s['expected']:.1f}), "
+            f"forward only {(m['fwd'] & ~m['rev']).sum()}, reverse only {(~m['fwd'] & m['rev']).sum()}, "
+            f"pooled but neither direction {(m['pooled'] & ~m['fwd'] & ~m['rev']).sum()}")
+        log(f"  2-way p < 0.05: distance {pc(p2['distance'].sum())}, direction {pc(p2['direction'].sum())}, "
+            f"distance x direction {pc(p2['interaction'].sum())}")
+        if s["both"].sum():
+            rows = t.index.get_indexer(t.index[s["both"]])
+            r = np.mean([np.corrcoef(tuning[eye][i, 0], tuning[eye][i, 1])[0, 1] for i in rows])
+            log(f"  modulated in both directions: same preferred distance {s['agree']:.0%} "
+                f"(chance {s['chance']:.0%}), mean correlation of the distance tuning {r:+.2f}")
+
+
+def plot_direction_modulation(t, out_dir, title):
+    """
+    Top: % of the cells reliable to each eye that are distance-modulated forward, reverse, in
+    both directions (tick: expected if independent), pooled, and the 2-way ANOVA terms; dashed
+    line = 5% chance. Bottom: preferred distance forward vs reverse for cells modulated in both.
+    """
+    labels = ["forward", "reverse", "both\ndirections", "pooled", "2-way\ndistance", "2-way\ndist×dir",
+              "2-way\ndirection"]
+    fig, axes = plt.subplots(2, 3, figsize=(17, 9), gridspec_kw={"height_ratios": [1.2, 1]})
+    for j, eye in enumerate(PANEL_ORDER):
+        s = direction_summary(t, eye)
+        n = max(s["n"], 1)
+        vals = [s["m"]["fwd"].sum(), s["m"]["rev"].sum(), s["both"].sum(), s["m"]["pooled"].sum(),
+                s["p2"]["distance"].sum(), s["p2"]["interaction"].sum(), s["p2"]["direction"].sum()]
+        ax = axes[0, j]
+        x = np.arange(len(vals))
+        ax.bar(x, 100 * np.array(vals) / n, color=EYE_COLOR[eye], alpha=0.8)
+        for xi, v in zip(x, vals):
+            ax.text(xi, 100 * v / n + 0.5, str(v), ha="center", va="bottom", fontsize=9)
+        ax.plot([2 - 0.4, 2 + 0.4], [100 * s["expected"] / n] * 2, color="black", linewidth=2)
+        ax.axhline(5, color="0.4", linestyle="--", linewidth=1)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=9)
+        ax.set_ylabel("% of reliable cells", fontsize=11)
+        ax.set_title(f"{EYE_LABEL[eye]} (n={s['n']} reliable)", fontsize=12)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+
+        ax = axes[1, j]
+        a, b = s["pref"]
+        M = np.zeros((4, 4), dtype=int)
+        np.add.at(M, (a, b), 1)
+        ax.imshow(M, cmap="Greys", vmin=0, vmax=max(M.max(), 1))
+        for (i, k), v in np.ndenumerate(M):
+            ax.text(k, i, str(v), ha="center", va="center", fontsize=11,
+                    color="white" if v > M.max() / 2 else "black")
+        ticks = [f"{DIST_CM[k]} cm" for k in range(4)]
+        ax.set_xticks(range(4))
+        ax.set_xticklabels(ticks)
+        ax.set_yticks(range(4))
+        ax.set_yticklabels(ticks)
+        ax.set_xlabel("preferred distance, reverse", fontsize=11)
+        ax.set_ylabel("preferred distance, forward", fontsize=11)
+        agree = "" if not len(a) else f": same {s['agree']:.0%} (chance {s['chance']:.0%})"
+        ax.set_title(f"modulated in both directions (n={len(a)}){agree}", fontsize=11)
+    fig.suptitle(f"{title}\ndistance modulation by sweep direction (forward = −30→60°, reverse = 60→−30°)",
+                 fontsize=13)
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "direction_modulation.png"), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_location_map(D, eye_df, out_dir, cell_size=60):
     """
     Cells on the suite2p field of view, colored by which eye reliably drives them, from the
@@ -591,32 +971,68 @@ def plot_cell_distances(cell, cross_viz, eye_df):
     return fig
 
 
-def save_cell_plots(plot, eye_df, out_dir, cells=None):
+def direction_viz(D, Dd, stats, stats_d, corr_floor=None, eye="both"):
     """
-    One figure per cell in cells/<category>/cell_<id>.png, drawn by plot(cell). By default every
-    cell reliable in any condition, after clearing cells/ so a rerun with other criteria leaves
-    no stale figures.
+    CrossSessionVisualizer for one eye of an interleaved session, one row per condition: both
+    directions pooled / forward / reverse, stats from the caches with the corr floor applied.
     """
-    cells_dir = os.path.join(out_dir, "cells")
+    rows = [(EYE_LABEL[eye], D[eye], stats[eye])] + [
+        (f"{EYE_LABEL[eye]} - {DIR_LABEL[s]}", Dd[(eye, s)], stats_d[(eye, s)]) for s in DIRECTIONS]
+    return CrossSessionVisualizer([(label, CellVisualizer(d)) for label, d, _ in rows],
+                                  stats={label: floor_stats(df, corr_floor) for label, _, df in rows})
+
+
+def plot_cell_directions(cell, viz, dir_df, eye="both"):
+    p = {term: dir_df.loc[cell, f"p2_{eye}_{term}"] for term in ("distance", "direction", "interaction")}
+    fig = viz.plot_cell(cell, show_condition=False)
+    fig.suptitle(f"Cell {cell} — pooled / forward (−30→60°) / reverse (60→−30°)     2-way p: "
+                 f"distance {p['distance']:.3f}, direction {p['direction']:.3f}, "
+                 f"dist×dir {p['interaction']:.3f}", fontsize=18)
+    return fig
+
+
+def direction_groups(dir_df, eye="both"):
+    """the cells behind each bar of direction_modulation.png for that eye: {folder: cell ids}"""
+    s = direction_summary(dir_df, eye)
+    masks = {"forward": s["m"]["fwd"], "reverse": s["m"]["rev"], "both_directions": s["both"],
+             "pooled": s["m"]["pooled"], "2way_distance": s["p2"]["distance"],
+             "2way_dist_x_dir": s["p2"]["interaction"], "2way_direction": s["p2"]["direction"]}
+    return {folder: dir_df.index[m].tolist() for folder, m in masks.items()}
+
+
+def save_cell_plots(plot, groups, cells_dir, cells=None):
+    """
+    One figure per cell, drawn once by plot(cell) and saved as cell_<id>.png in every
+    <cells_dir>/<group>/ the cell belongs to (groups: {folder: cell ids}; may overlap). By
+    default every cell in any group, after clearing cells_dir so a rerun with other criteria
+    leaves no stale figures. Cells asked for in `cells` but in no group go to none/.
+    """
+    member = {}
+    for folder, ids in groups.items():
+        for cell in ids:
+            member.setdefault(cell, []).append(folder)
     if cells is None:
-        cells = eye_df.index[eye_df["category"] != "none"].tolist()
+        cells = list(member)
         shutil.rmtree(cells_dir, ignore_errors=True)
 
     for i, cell in enumerate(cells, 1):
         print(f"Plotting cell {i} of {len(cells)}", end="\r", flush=True)
-        cat_dir = os.path.join(cells_dir, CATEGORY_DIR[eye_df.loc[cell, "category"]])
-        os.makedirs(cat_dir, exist_ok=True)
+        paths = [os.path.join(cells_dir, folder, f"cell_{cell}.png") for folder in member.get(cell, ["none"])]
+        for path in paths:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         fig = plot(cell)
-        fig.savefig(os.path.join(cat_dir, f"cell_{cell}.png"), dpi=150, bbox_inches="tight")
+        fig.savefig(paths[0], dpi=150, bbox_inches="tight")
         plt.close(fig)
+        for path in paths[1:]:
+            shutil.copyfile(paths[0], path)
     print()
-    return cells_dir, len(cells)
+    return len(cells)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Right / left / both-eye comparison on the distance device")
     ap.add_argument("--mouse", default="SAM047")
-    ap.add_argument("--date", default="260930")
+    ap.add_argument("--date", default="261006")
     ap.add_argument("--data-dir", default=r"D:/data-distance-coding-project/processed-data")
     ap.add_argument("--n-iterations", type=int, default=200)
     ap.add_argument("--corr-floor", type=float, default=0.85,
@@ -628,29 +1044,43 @@ def main():
                     help="seconds before onset shown in onset_aligned.png")
     ap.add_argument("--recompute", action="store_true",
                     help="ignore the cached <session>_dataframe.pkl files")
+    ap.add_argument("--jobs", type=int, default=6,
+                    help="interleaved sessions: conditions (eye, eye x direction) analysed in parallel "
+                         "when not cached; ~2 GB of memory each")
     ap.add_argument("--cells", type=int, nargs="+", default=None,
                     help="plot only these cell ids (default: every cell reliable in any condition)")
     ap.add_argument("--skip-cells", action="store_true",
-                    help="skip the per-cell figures (the slow part)")
+                    help="skip the per-cell figures (the slow part); same as --cell-figures none")
+    ap.add_argument("--cell-figures", choices=("all", "eyes", "directions", "none"), default="all",
+                    help="which per-cell figures: cells/ (eyes), cells_directions/ (directions), both or none")
     args = ap.parse_args()
     plt.switch_backend("Agg")
 
-    title = f"{args.date}_{args.mouse} distance: right / left / both"
-    out_dir = os.path.join(args.data_dir, f"{args.date}_{args.mouse}_distance-both", "results", "eye_comparison")
+    # one interleaved session (v3 stimulus) if there is one, else three sessions (one per eye)
+    interleaved = is_interleaved(args.mouse, args.date, args.data_dir)
+    title = f"{args.date}_{args.mouse} distance: right / left / both" + (" (interleaved)" if interleaved else "")
+    out_dir = results_dir(args.mouse, args.date, args.data_dir)
     os.makedirs(out_dir, exist_ok=True)
     log = Report(os.path.join(out_dir, "report.txt"))
     log(f"{title}\nargs: {vars(args)}\n")
 
-    # Step 0: process each session on its own (standard pipeline, cached), then checks,
+    # Step 0: process each eye condition on its own (standard pipeline, cached), then checks,
     # common angle axis and pooled normalization for the figures
-    D, stats = process_sessions(args.mouse, args.date, args.data_dir, args.n_iterations, args.recompute, log)
+    if interleaved:
+        D, stats, Dd, stats_d = process_interleaved(args.mouse, args.date, args.data_dir, args.n_iterations,
+                                                    args.recompute, args.jobs, log)
+    else:
+        D, stats = process_sessions(args.mouse, args.date, args.data_dir, args.n_iterations, args.recompute, log)
     describe_sessions(D, log)
     distances = shown_distances(D)
     log(f"\nstimulus distances (all three sessions): {distances}"
         + ("  -> single-distance figures" if len(distances) == 1 else "  -> distance-tuning figures"))
     angles = align_angle_axis(D)
     log(f"\ncommon on_length: {len(angles)} frames ({angles[0]:.1f} -> {angles[-1]:.1f} deg)")
-    pooled_normalize(D, log)
+    if interleaved:
+        log("\none recording: RadialDevice's z-score already spans all three eye conditions")
+    else:
+        pooled_normalize(D, log)
 
     # Step 1: trial tensors (cells x trials x angle)
     X = {eye: trial_tensor(D[eye]) for eye in EYES}
@@ -668,18 +1098,41 @@ def main():
     plot_rf_shift_hist(eye_df, np.ravel(angles), out_dir, log, title, args.rf_top_n)
     if len(distances) > 1:
         plot_rf_shift_hist_by_distance(D, X, eye_df, np.ravel(angles), out_dir, log, title, args.rf_top_n)
+    if any(np.any(D[eye].direction_sequence < 0) for eye in EYES):
+        plot_direction_check(D, X, eye_df, np.ravel(angles), out_dir, log, title)
+    if interleaved:
+        block_drift(D, X, eye_df, log)
+
+    # Step 3 (interleaved, several distances): distance modulation per sweep direction
+    by_direction = interleaved and len(distances) > 1
+    if by_direction:
+        dir_df, tuning = build_direction_table(D, X, stats, stats_d, args.corr_floor)
+        report_direction_modulation(dir_df, tuning, log)
+        plot_direction_modulation(dir_df, out_dir, title)
+        dir_df.to_pickle(os.path.join(out_dir, "direction_table.pkl"))
+        dir_df.to_csv(os.path.join(out_dir, "direction_table.csv"))
 
     plot_onset_aligned(D, eye_df, out_dir, args.pre_s)
     plot_location_map(D, eye_df, out_dir)
 
-    if not args.skip_cells:
+    figures = "none" if args.skip_cells else args.cell_figures
+    if figures in ("all", "eyes"):
         if len(distances) == 1:
             plot = lambda cell: plot_cell(cell, D, X, eye_df, np.ravel(angles))
         else:
             cross_viz = distance_viz(D, stats, args.corr_floor)
             plot = lambda cell: plot_cell_distances(cell, cross_viz, eye_df)
-        cells_dir, n = save_cell_plots(plot, eye_df, out_dir, args.cells)
+        groups = {CATEGORY_DIR[c]: eye_df.index[eye_df["category"] == c].tolist() for c in CATEGORY_DIR if c != "none"}
+        cells_dir = os.path.join(out_dir, "cells")
+        n = save_cell_plots(plot, groups, cells_dir, args.cells)
         log(f"\nSaved {n} cell figures to: {cells_dir}")
+    if by_direction and figures in ("all", "directions"):
+        dir_viz = direction_viz(D, Dd, stats, stats_d, args.corr_floor)
+        groups = direction_groups(dir_df)
+        cells_dir = os.path.join(out_dir, "cells_directions")
+        n = save_cell_plots(lambda cell: plot_cell_directions(cell, dir_viz, dir_df), groups, cells_dir, args.cells)
+        log(f"\nSaved {n} both-eye cell figures (pooled / forward / reverse) to: {cells_dir}, one folder per bar "
+            f"of direction_modulation.png: " + ", ".join(f"{g} {len(v)}" for g, v in groups.items()))
     log(f"\nSaved results to: {out_dir}")
 
 
